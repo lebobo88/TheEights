@@ -18,9 +18,85 @@ export class SqliteStore {
   }
 
   migrate(): void {
-    // Two-pass migration: ensure base tables, then apply v2 ALTER (no-op if column exists).
     this.db.exec(MIGRATIONS_V1);
     this.applyV2();
+    this.applyV3();
+  }
+
+  private applyV3(): void {
+    const memCols = this.db.prepare(`PRAGMA table_info(memories)`).all() as Array<{ name: string }>;
+    if (!memCols.some((c) => c.name === "handle")) {
+      this.db.exec(`ALTER TABLE memories ADD COLUMN handle TEXT`);
+      this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_handle ON memories(handle)`);
+    }
+    if (!memCols.some((c) => c.name === "cell")) {
+      this.db.exec(`ALTER TABLE memories ADD COLUMN cell TEXT`);
+      this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_cell ON memories(cell)`);
+    }
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS hydra_envelopes (
+        envelope_id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        origin_squad TEXT,
+        target_squad TEXT,
+        payload_json TEXT NOT NULL,
+        context_refs_json TEXT NOT NULL DEFAULT '[]',
+        tenant_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        memory_id TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_hydra_env_workflow ON hydra_envelopes(workflow_id);
+      CREATE INDEX IF NOT EXISTS idx_hydra_env_type ON hydra_envelopes(type);
+      CREATE INDEX IF NOT EXISTS idx_hydra_env_target ON hydra_envelopes(target_squad);
+
+      CREATE TABLE IF NOT EXISTS governance_ledger (
+        run_id TEXT NOT NULL,
+        kind TEXT NOT NULL,          -- budget|iteration|depth|failure
+        delta REAL NOT NULL DEFAULT 0,
+        total REAL NOT NULL,
+        cap REAL NOT NULL,
+        action TEXT NOT NULL,        -- proceed|downgrade|block|trip
+        at TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        trace_id TEXT NOT NULL,
+        meta_json TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX IF NOT EXISTS idx_gov_ledger_run ON governance_ledger(run_id);
+      CREATE INDEX IF NOT EXISTS idx_gov_ledger_kind ON governance_ledger(kind);
+
+      CREATE TABLE IF NOT EXISTS governance_caps (
+        run_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        cap REAL NOT NULL,
+        PRIMARY KEY (run_id, kind)
+      );
+
+      CREATE TABLE IF NOT EXISTS hitl_queue (
+        request_id TEXT PRIMARY KEY,
+        run_id TEXT,
+        kind TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending', -- pending|approved|rejected|expired
+        requested_at TEXT NOT NULL,
+        resolved_at TEXT,
+        resolved_by TEXT,
+        decision_json TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_hitl_status ON hitl_queue(status);
+      CREATE INDEX IF NOT EXISTS idx_hitl_run ON hitl_queue(run_id);
+
+      CREATE TABLE IF NOT EXISTS breaker_state (
+        node_id TEXT PRIMARY KEY,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        tripped INTEGER NOT NULL DEFAULT 0,
+        tripped_at TEXT,
+        last_failure_at TEXT
+      );
+
+      INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (3, datetime('now'));
+    `);
   }
 
   private applyV2(): void {

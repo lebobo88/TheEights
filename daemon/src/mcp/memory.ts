@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Envelope } from "../schemas/envelope.js";
-import { MemoryType } from "../schemas/memory.js";
+import { MemoryType, Cell } from "../schemas/memory.js";
+import { MemoryHandle } from "../schemas/memory-handle.js";
 import type { MemoryEngine } from "../engines/memory.js";
 
 export const AddArgs = z.object({
@@ -18,6 +19,18 @@ export const AddArgs = z.object({
   embedding: z.array(z.number()).optional(),
   confidence: z.number().min(0).max(1).optional(),
   supersedes: z.array(z.string()).optional(),
+  handle: MemoryHandle.optional(),
+  cell: Cell.optional(),
+});
+
+export const ResolveBatchArgs = z.object({
+  envelope: Envelope,
+  handles: z.array(z.string()).min(1).max(256),
+});
+
+export const ResolveArgs = z.object({
+  envelope: Envelope,
+  handle_or_id: z.string(),
 });
 
 export const SearchArgs = z.object({
@@ -48,8 +61,8 @@ export function registerMemoryTools(engine: MemoryEngine) {
     "eights.memory.add": {
       description: "Write a memory (working|episodic|semantic|procedural|meta). Auto-embeds via the local embedder.",
       schema: AddArgs,
-      handler: async (a: z.infer<typeof AddArgs>) =>
-        engine.add(a.envelope, {
+      handler: async (a: z.infer<typeof AddArgs>) => {
+        const mem = await engine.add(a.envelope, {
           content: a.content,
           type: a.type,
           summary: a.summary,
@@ -58,7 +71,11 @@ export function registerMemoryTools(engine: MemoryEngine) {
           embedding: a.embedding ? Float32Array.from(a.embedding) : undefined,
           confidence: a.confidence,
           supersedes: a.supersedes,
-        }),
+          handle: a.handle,
+          cell: a.cell,
+        });
+        return { ...mem, id: mem.id, handle: mem.handle };
+      },
     },
     "eights.memory.search": {
       description: "Hybrid memory search across vector + graph + episodic. Falls back to episodic when the local embedder is unavailable.",
@@ -77,6 +94,16 @@ export function registerMemoryTools(engine: MemoryEngine) {
       description: "Fetch a memory by id.",
       schema: GetArgs,
       handler: async (a: z.infer<typeof GetArgs>) => engine.get(a.envelope, a.memory_id),
+    },
+    "eights.memory.resolve": {
+      description: "Resolve a memory by either its raw id or its handle URI (ep://, sem://, proc://, meta://, mem://).",
+      schema: ResolveArgs,
+      handler: async (a: z.infer<typeof ResolveArgs>) => engine.resolve(a.envelope, a.handle_or_id),
+    },
+    "eights.memory.resolve_batch": {
+      description: "Bulk-resolve memory handles. Supervisors use this to hydrate envelope context refs in a single call.",
+      schema: ResolveBatchArgs,
+      handler: async (a: z.infer<typeof ResolveBatchArgs>) => engine.resolveBatch(a.envelope, a.handles),
     },
     "eights.memory.link": {
       description: "Create a typed edge between two memories.",

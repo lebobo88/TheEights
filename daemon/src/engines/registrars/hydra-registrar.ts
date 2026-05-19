@@ -14,10 +14,14 @@ export class HydraRegistrar {
     const squadsDir = join(HYDRA_ROOT, "squads");
     if (existsDir(squadsDir)) {
       for (const p of walk(squadsDir, (f) => f.endsWith("squad.yaml") || f.endsWith("squad.yml"), 3)) {
-        // /squads/<squad>/squad.yaml — derive slug from parent dir.
         const slug = p.split(/[\\/]/).slice(-2, -1)[0] ?? basenameNoExt(p);
-        // Hydra squads carry tool-privilege escalation; critical by default.
-        this.regOne(env, r, { source_path: p, kind: "workflow", risk_class: "critical", consumer: "hydra", rid: `resource:hydra.squad.${slug}` });
+        // Executive + legal-compliance + governance squads are frozen.
+        // Everything else is high (HITL) by default; operators can demote via evolution.unfreeze.
+        const risk = ["executive", "legal-compliance", "governance"].includes(slug) ? "critical" : "high";
+        this.regOne(env, r, {
+          source_path: p, kind: "squad", risk_class: risk, consumer: "hydra",
+          rid: `resource:hydra.squad.${slug}`,
+        });
       }
     }
     this.log.info({ ...r, errors: r.errors.length }, "hydra-registrar complete");

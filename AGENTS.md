@@ -22,7 +22,11 @@ Read `ARCHITECTURE.md` first. Read `ROADMAP.md` for phase scope.
 
 4. **No silent mutation.** All resource changes go through the Evolution Engine, even seed data.
 
-5. **No telemetry to anywhere other than the local event log.** v1 is local-first single-user. No outbound HTTP from the daemon.
+5. **No telemetry to anywhere other than the local event log.** v1 is local-first single-user. No outbound HTTP from the daemon. The Phase-6 OTEL sink is opt-in AND hard-gated to localhost endpoints; it refuses any non-loopback hostname at startup.
+
+6. **Constitution attestation is mandatory at workflow intake.** Every supervisor MUST call `eights.constitution.attest` before its planning phase and bind the returned `receipt_signature` to its run state. Refusal aborts the workflow.
+
+7. **Hydra squads are not edited as YAML files.** They are `kind: "squad"` resources. Adding or modifying a squad goes through `eights.evolution.propose` + HITL approval. Direct YAML edits get blown away by the next registrar sweep.
 
 ## Coding standards
 
@@ -40,6 +44,8 @@ Read `ARCHITECTURE.md` first. Read `ROADMAP.md` for phase scope.
 - Engines (`daemon/src/engines/`) call stores. They do not call MCP handlers.
 - Stores (`daemon/src/stores/`) are pure CRUD + query. No business logic.
 - Cognitive services (`daemon/src/cognitive/`) call engines + LLMs. They do not call stores.
+- Scheduled jobs (`daemon/src/cognitive/*-job.ts`) follow a `start() / stop() / runOnce()` triad and never block daemon shutdown. Memory Steward, Cost Analyst, and Iolaus live here.
+- Observability sinks (`daemon/src/observability/`) attach to existing engines (audit, metrics) by composition, not by mutation of their internal state. The OTEL sink is the canonical example: it wraps `AuditEngine.record` rather than reaching into the queue.
 - Adapters (`daemon/src/adapters/`) call MCP tools through the daemon's own internal MCP client. They do not import engines directly. This keeps adapters portable.
 
 ## When adding a new consumer system (5th, 6th, ...)

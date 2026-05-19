@@ -196,6 +196,42 @@ All tools take an `Envelope` (above) and return JSON.
 - `events.tail(filter) → SSE stream`
 - `metrics() → {tokens, latency_ms, gate_pass_rate, drift_indicators}`
 
+### `eights.constitution.*` (Phase 6 — manifesto alignment)
+- `get(consumer) → {text, version, hash, frozen}`
+- `attest(consumer) → ConstitutionReceipt` — hash-chained binding of a workflow run to a specific constitution. Refuses on missing/drifted.
+- `propose_amendment(consumer, draft, rationale) → Proposal` — always HITL; even after operator unfreeze, no auto-commit.
+
+### `eights.hydra.*` (Phase 6)
+- `envelope.record(hydra_envelope)` — durable + audited + semantically indexed record of any HydraEnvelope subtype.
+- `envelope.query({workflow_id?, type?, target_squad?, origin_squad?, since?, limit?})` — precedent retrieval.
+- `handoff.list(workflow_id) → Handoff[]` — every cross-squad delegation in a workflow.
+
+### `eights.squad.*` (Phase 6)
+- `list({active_only?})` — every Hydra squad as a kind=squad resource.
+- `get(squad_id)` — YAML body + version + risk_class.
+
+### `eights.prompt.*` (Phase 6)
+- `list({consumer?})` — every agent prompt across the four consumers.
+- `get(rid)` — current prompt body + version + evolution_policy.
+- `diff(rid, from_version?, to_version?)` — unified line diff for HITL reviewers.
+
+### `eights.cells.*` (Phase 6)
+- `distribution({workflow_id?, project_id?, since?}) → {vision, context, triggers, influence, risk, focus, constraints, delight, untagged}`
+- `query(cell, top_k=20)` — recent memories tagged with one cell.
+- `classify(text, summary?)` — keyword-first 8-cell classifier with optional local-Ollama fallback.
+
+### `eights.governance.*` (Phase 6 — extended)
+- `budget.charge(run_id, cost_usd, tokens?) → {action: proceed|downgrade|block}` — durable across daemon restart.
+- `ceiling.tick(run_id, kind: iteration|depth|failure)` — manifesto's loop ceilings.
+- `cap.set(run_id, kind, cap)` — per-run cap override.
+- `hitl.request(kind, payload, run_id?)` / `hitl.resolve(request_id, decision)` / `hitl.list(status?)`
+- `breaker.status(node_id)` / `breaker.outcome(node_id, success|failure)` / `breaker.reset(node_id)`
+- `redact_for_squad(target_squad, payload)` — applies the target squad's redaction policy resource.
+
+### `eights.memory.*` (Phase 6 — extended)
+- `resolve(handle_or_id)` — accepts `ep://`, `sem://`, `proc://`, `meta://`, `mem://`, or raw id.
+- `resolve_batch(handles[])` — bulk fetch used by supervisors hydrating envelope context refs.
+
 ---
 
 ## 6. Component responsibilities
@@ -426,6 +462,9 @@ These cannot be modified by the Evolution Engine, ever:
 5. **HITL bypass prohibition** — no policy can grant auto-commit to non-`low` risk classes without an explicit operator-signed override.
 6. **WriteBridge sandboxing** — no `WriteBridge.write()` may target a path outside its consumer's allowlisted root (enforced via `path.resolve`-containment check + integration test). See ADR-0007.
 7. **Eval rubric immutability under evolution** — per-kind judge rubrics (`resource:eights.eval-rubric.*`) are `risk_class=critical, evolution_policy=frozen`. Evolution cannot mutate the criteria it is evaluated by. See ADR-0008.
+8. **Constitution attestation at workflow intake (Phase 6)** — every supervisor MUST call `eights.constitution.attest` before entering its planning phase. The returned `receipt_signature` is hash-chained into the audit log and binds the run to a specific constitution hash. Refusal (missing or drifted constitution) MUST abort the workflow. Constitution resources are `kind: "constitution"`, `risk_class: "critical"`, `evolution_policy: "frozen"`; amendments require operator-signed `unfreeze` + HITL approval.
+9. **Squad lifecycle through Evolution Engine (Phase 6)** — Hydra squads are `kind: "squad"` resources, never raw YAML reads. Executive / legal-compliance / governance squads are critical-frozen; all others are at minimum `risk_class: "high"` → `evolution_policy: "hitl-only"`. Adding or modifying a squad requires `eights.evolution.propose` + operator approval.
+10. **OTEL exporter is loopback-only (Phase 6)** — `OtelSink` refuses any endpoint whose hostname is not `localhost` / `127.0.0.1` / `::1`. This is enforced at daemon startup and preserves the no-outbound-HTTP invariant from rule #5 of `AGENTS.md`.
 
 ---
 

@@ -7,6 +7,7 @@ import type { PolicyEngine } from "./policy.js";
 import type { Embedder } from "../embeddings.js";
 import type { Envelope } from "../schemas/envelope.js";
 import type { Memory, MemoryHit, MemoryType, Provenance } from "../schemas/memory.js";
+import { deriveHandle, isHandle, parseHandle } from "../schemas/memory-handle.js";
 
 export class MemoryRejection extends Error {
   constructor(
@@ -27,6 +28,8 @@ export interface AddMemoryInput {
   confidence?: number;
   supersedes?: string[];
   expires_at?: string;
+  handle?: string;
+  cell?: string;
 }
 
 export interface SearchMemoryInput {
@@ -101,6 +104,7 @@ export class MemoryEngine {
     let embedding_id: number | undefined;
     if (embedding) embedding_id = this.vec.insert(embedding);
 
+    const handle = input.handle ?? deriveHandle({ memory_id: id, type: input.type, provenance: input.provenance });
     const mem: Memory = {
       id,
       type: input.type,
@@ -114,6 +118,8 @@ export class MemoryEngine {
       confidence: input.confidence ?? 0.5,
       supersedes: input.supersedes ?? [],
       superseded_by: [],
+      handle,
+      cell: (input.cell as Memory["cell"]) ?? null,
     };
 
     this.sql.db
@@ -121,8 +127,9 @@ export class MemoryEngine {
         `INSERT INTO memories(
           id, type, content, summary, embedding_id, graph_node_id,
           provenance_json, scopes_json, tenant_id, project_id, domain,
-          created_at, expires_at, confidence, supersedes_json, superseded_by_json
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          created_at, expires_at, confidence, supersedes_json, superseded_by_json,
+          handle, cell
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         id, input.type, input.content, input.summary ?? null,
@@ -134,10 +141,29 @@ export class MemoryEngine {
         mem.confidence,
         JSON.stringify(input.supersedes ?? []),
         "[]",
+        handle, input.cell ?? null,
       );
 
-    this.audit.record("memory.add", env, { memory_id: id, type: input.type, embedded: !!embedding_id });
+    this.audit.record("memory.add", env, { memory_id: id, type: input.type, handle, cell: input.cell ?? null, embedded: !!embedding_id });
     return mem;
+  }
+
+  /**
+   * Resolve a memory by either its raw id or its handle URI. Supports the
+   * four canonical schemes plus the opaque `mem://` fallback.
+   */
+  resolve(env: Envelope, idOrHandle: string): Memory | null {
+    if (!isHandle(idOrHandle)) return this.get(env, idOrHandle);
+    const parsed = parseHandle(idOrHandle);
+    if (parsed.scheme === "mem") return this.get(env, parsed.memory_id);
+    const row = this.sql.db
+      .prepare("SELECT * FROM memories WHERE handle = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT 1")
+      .get(idOrHandle, env.tenant_id) as Record<string, unknown> | undefined;
+    return row ? rowToMemory(row) : null;
+  }
+
+  resolveBatch(env: Envelope, handles: string[]): Array<{ handle: string; memory: Memory | null }> {
+    return handles.map((h) => ({ handle: h, memory: this.resolve(env, h) }));
   }
 
   get(env: Envelope, id: string): Memory | null {
@@ -216,5 +242,7 @@ function rowToMemory(row: Record<string, unknown>): Memory {
     confidence: row.confidence as number,
     supersedes: JSON.parse(row.supersedes_json as string) as string[],
     superseded_by: JSON.parse(row.superseded_by_json as string) as string[],
+    handle: (row.handle as string | null) ?? undefined,
+    cell: (row.cell as Memory["cell"]) ?? null,
   };
 }

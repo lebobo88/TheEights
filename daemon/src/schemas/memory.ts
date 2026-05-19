@@ -18,6 +18,12 @@ export const Provenance = z.object({
 });
 export type Provenance = z.infer<typeof Provenance>;
 
+export const Cell = z.enum([
+  "vision", "context", "triggers", "influence",
+  "risk", "focus", "constraints", "delight",
+]);
+export type Cell = z.infer<typeof Cell>;
+
 export const Memory = z.object({
   id: z.string(),
   type: MemoryType,
@@ -32,6 +38,8 @@ export const Memory = z.object({
   confidence: z.number().min(0).max(1).default(0.5),
   supersedes: z.array(z.string()).default([]),
   superseded_by: z.array(z.string()).default([]),
+  handle: z.string().optional(),
+  cell: Cell.nullable().default(null),
 });
 export type Memory = z.infer<typeof Memory>;
 

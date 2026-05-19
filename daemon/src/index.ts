@@ -23,6 +23,16 @@ import { ExecSuiteWatcher } from "./engines/execsuite-watcher.js";
 import { RlmWatcher } from "./engines/rlm-watcher.js";
 import { Miner } from "./engines/miner.js";
 import { BomEngine } from "./engines/bom.js";
+import { ConstitutionEngine } from "./engines/constitution.js";
+import { HydraEngine } from "./engines/hydra.js";
+import { GovernanceStateEngine } from "./engines/governance-state.js";
+import { RedactionEngine } from "./engines/redaction.js";
+import { CellClassifier } from "./cognitive/cell-classifier.js";
+import { MemoryStewardJob } from "./cognitive/memory-steward.js";
+import { CostAnalystJob } from "./cognitive/cost-analyst.js";
+import { IolausJob } from "./cognitive/iolaus.js";
+import { PromptRegistrar } from "./engines/registrars/prompts.js";
+import { OtelSink } from "./observability/otel-sink.js";
 import { OllamaEmbedder } from "./embeddings.js";
 import { OllamaCompleter } from "./engines/eval/completer.js";
 import { PpBridge } from "./adapters/pp-bridge.js";
@@ -51,6 +61,11 @@ import { registerAuditTools } from "./mcp/audit.js";
 import { registerGovernanceTools } from "./mcp/governance.js";
 import { registerEvolutionTools } from "./mcp/evolution.js";
 import { registerAdapterTools } from "./mcp/adapters.js";
+import { registerConstitutionTools } from "./mcp/constitution.js";
+import { registerHydraTools } from "./mcp/hydra.js";
+import { registerSquadTools } from "./mcp/squad.js";
+import { registerCellTools } from "./mcp/cells.js";
+import { registerPromptTools } from "./mcp/prompt.js";
 import { startMcpServer, type ToolMap } from "./mcp/server.js";
 import type { Envelope } from "./schemas/envelope.js";
 
@@ -111,6 +126,36 @@ async function main(): Promise<void> {
   evolution.seedCriticalResources();
   seedEvalRubrics(evolution);
 
+  const constitution = new ConstitutionEngine(evolution, audit);
+  seedConstitutions(constitution, log);
+
+  const hydraEngine = new HydraEngine(sql, audit, memory);
+  const governance = new GovernanceStateEngine(sql, audit);
+  const redaction = new RedactionEngine(evolution, policy, audit);
+  const classifier = new CellClassifier(completer);
+
+  const otel = new OtelSink(
+    { enabled: process.env.EIGHTS_OTEL_ENABLED === "1",
+      endpoint: process.env.EIGHTS_OTEL_ENDPOINT ?? "http://localhost:4318/v1/traces",
+      service_name: "eights-daemon" },
+    log,
+  );
+  otel.attach(audit);
+
+  const promptRegistrar = new PromptRegistrar(evolution, log);
+  promptRegistrar.run({
+    tenant_id: "local", actor_id: "eights.system",
+    project_id: "TheEights", domain: "infra",
+    scope: [], trace_id: "seed-prompts",
+  });
+
+  const stewardJob = new MemoryStewardJob(sql, memory, audit, log);
+  const costJob = new CostAnalystJob(sql, memory, audit, log);
+  const iolausJob = new IolausJob(sql, evolution, memory, audit, log);
+  stewardJob.start();
+  costJob.start();
+  iolausJob.start();
+
   const ppBridge = new PpBridge(memory);
   const ppWatcher = new PpWatcher(sql, ppBridge, log);
   ppWatcher.start();
@@ -137,15 +182,21 @@ async function main(): Promise<void> {
     ...registerMemoryTools(memory),
     ...registerIdentityTools(identity),
     ...registerAuditTools(audit, sql),
-    ...registerGovernanceTools(policy),
+    ...registerGovernanceTools(policy, governance, redaction),
     ...registerEvolutionTools(evolution),
     ...registerAdapterTools({ pp: ppWatcher, exec: execWatcher, rlm: rlmWatcher, miner, bom, registrars }),
+    ...registerConstitutionTools(constitution),
+    ...registerHydraTools(hydraEngine),
+    ...registerSquadTools(evolution),
+    ...registerCellTools(sql, classifier, audit),
+    ...registerPromptTools(evolution),
   };
   log.info({ tool_count: Object.keys(tools).length }, "MCP tools registered");
 
   const shutdown = async (sig: string): Promise<void> => {
     log.info({ sig }, "shutting down");
     ppWatcher.stop(); execWatcher.stop(); rlmWatcher.stop(); miner.stop();
+    stewardJob.stop(); costJob.stop(); iolausJob.stop(); otel.stop();
     try { await graph.close(); } catch { /* ignore */ }
     sql.close();
     process.exit(0);
@@ -175,6 +226,37 @@ function seedEvalRubrics(evolution: EvolutionEngine): void {
       risk_class: "critical",
       initial_content: body,
     });
+  }
+}
+
+/**
+ * Seed each consumer's Immortal Head. We import from canonical source paths
+ * where they exist; if a consumer ships no constitution we fall back to a
+ * placeholder so attestation has something to bind to (operators can amend
+ * via `eights.constitution.propose_amendment`).
+ */
+function seedConstitutions(c: ConstitutionEngine, log: ReturnType<typeof makeLogger>): void {
+  const env: Envelope = {
+    tenant_id: "local", actor_id: "eights.system",
+    project_id: "TheEights", domain: "infra",
+    scope: [], trace_id: "seed-constitutions",
+  };
+  const seeds: Array<{ consumer: "hydra" | "pp" | "execsuite" | "rlm"; path: string }> = [
+    { consumer: "hydra", path: "C:/AiAppDeployments/Hydra/constitution.md" },
+    { consumer: "pp", path: "C:/AiAppDeployments/pair-programmer/constitution.md" },
+    { consumer: "execsuite", path: "C:/AiAppDeployments/ExecutiveSuite/constitution.md" },
+    { consumer: "rlm", path: "C:/AiAppDeployments/RLM-CLI-Starter/constitution.md" },
+  ];
+  for (const s of seeds) {
+    let content = `# ${s.consumer} constitution (placeholder)\n\nSeeded by TheEights — amend via eights.constitution.propose_amendment.\n`;
+    let source: string | undefined = s.path;
+    try { content = readFileSync(s.path, "utf8"); } catch { source = undefined; }
+    try {
+      c.seed(env, s.consumer, content, source);
+      log.info({ consumer: s.consumer, sourced_from: source ?? "placeholder" }, "constitution seeded");
+    } catch (err) {
+      log.warn({ consumer: s.consumer, err: String(err) }, "constitution seed failed");
+    }
   }
 }
 

@@ -73,6 +73,28 @@ Live deployment numbers: **1,284 evolvable resources** registered (pp: 59, hydra
 
 **Exit criteria:** a decision in ExecutiveSuite is informed by a pattern mined from a pair-programmer run in a different project.
 
+## Phase 5 — Self-evolution closed-loop (DONE)
+
+- [x] Critical-frozen seeds across all 4 consumers (1,284 evolvable resources)
+- [x] Side-branch writeback (`theeights/auto`) per ADR-0007
+- [x] LLM-judge / YAML-structural / rubric-backtest / noop eval registry
+
+## Phase 6 — Hydra manifesto alignment (DONE)
+
+- [x] **Track 1 — Immortal Head.** `kind: "constitution"` resource (critical-frozen), `eights.constitution.{get,attest,propose_amendment}` MCP tools, hash-chained attestation receipts. Hydra `HydraState` carries `constitution_hash` populated at intake.
+- [x] **Track 2 — Memory handle scheme.** `ep://`, `sem://`, `proc://`, `meta://`, `mem://` URI parsing in `schemas/memory-handle.ts`. `memory.add` now returns `{ id, handle }`; new `memory.resolve` + `memory.resolve_batch` tools.
+- [x] **Track 3 — HydraEnvelope native ingest.** `engines/hydra.ts` durably records every CSuiteDecisionPacket / PRD / ArchRFC / DevTask / CreativeBrief / ShotList / AssetJob / DecisionRecord / HITLRequest / Handoff with semantic indexing. New `eights.hydra.envelope.{record,query}` + `eights.hydra.handoff.list` MCP tools. Replaces the Phase-4 `adapters/hydra-bridge.ts` stub.
+- [x] **Track 4 — Eight Cells semantic axis.** `Cell` enum (vision / context / triggers / influence / risk / focus / constraints / delight) on every memory row. `cognitive/cell-classifier.ts` (keyword-first, optional local-Ollama fallback). New `eights.cells.{distribution,query,classify}`.
+- [x] **Track 5 — Governance plane.** `engines/governance-state.ts`: durable budget ledger (proceed → downgrade @ 80% → block @ 100%), loop ceilings (iteration / depth / failure), circuit breaker (3-strike), durable HITL queue. New `eights.governance.{budget.charge, ceiling.tick, cap.set, hitl.request, hitl.resolve, hitl.list, breaker.status, breaker.outcome, breaker.reset}`.
+- [x] **Track 6 — Squad-scoped redaction.** `kind: "redaction_policy"` resource (high-risk → HITL-only). `engines/redaction.ts` walks any payload, strips scope-tagged refs per target squad, runs the existing PII patterns. New `eights.governance.redact_for_squad`.
+- [x] **Track 7 — Squads as evolvable resources.** `kind: "squad"` (executive / legal-compliance / governance → critical-frozen; others → high). `hydra-registrar` bulk-registers all squads. New `eights.squad.{list,get}`.
+- [x] **Track 8 — OTEL bridge.** Optional `observability/otel-sink.ts` exporter, hard-gated to localhost endpoints (refuses non-loopback at startup). Off by default; enable via `EIGHTS_OTEL_ENABLED=1`.
+- [x] **Track 9 — Procedural spine.** `engines/registrars/prompts.ts` bulk-registers every `.claude/`, `.codex/`, `.gemini/` agent prompt across the four consumer repos as `kind: "prompt"`. New `eights.prompt.{list,get,diff}` for HITL reviewers.
+- [x] **Track 10 — Cognitive services.** `cognitive/memory-steward.ts` (6h cadence consolidation), `cost-analyst.ts` (daily burn memo), `iolaus.ts` (daily deprecation sweep — the manifesto's "Cauterizer").
+- [x] **Track 11 — Tests + docs.** 11 new vitest cases in `test/phase6.test.ts`; all 43/43 daemon tests green. ROADMAP + ARCHITECTURE refreshed.
+
+**Exit criterion:** every Hydra workflow now binds to a constitution receipt at intake, records every cross-squad envelope to TheEights, charges budget through `governance.budget.charge` (durable across restart), redacts cross-squad payloads through `redact_for_squad`, and loads agent prompts via `eights.prompt.get`. All eleven Phase-6 tests pass.
+
 ## Out of scope for v1
 
 - Cloud / multi-tenant deployment (architecture supports it; not built)

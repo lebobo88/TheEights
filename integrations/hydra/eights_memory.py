@@ -170,6 +170,136 @@ class EightsMemoryService:
         )
         return result["edge_id"]
 
+    # ------------------------------------------------------------------
+    # Phase 6 — Hydra-manifesto alignment surface
+    # ------------------------------------------------------------------
+
+    async def constitution_attest(
+        self,
+        *,
+        actor: str,
+        project_id: str,
+        domain: str,
+        consumer: str = "hydra",
+    ) -> dict[str, Any]:
+        """Bind a workflow run to the current constitution. Raises on missing/drifted."""
+        env = Envelope(actor_id=actor, project_id=project_id, domain=domain)
+        return await self._client.call(
+            "eights.constitution.attest",
+            {"envelope": env.to_json(), "consumer": consumer},
+        )
+
+    async def constitution_get(
+        self, *, actor: str, project_id: str, domain: str, consumer: str = "hydra",
+    ) -> dict[str, Any]:
+        env = Envelope(actor_id=actor, project_id=project_id, domain=domain)
+        return await self._client.call(
+            "eights.constitution.get",
+            {"envelope": env.to_json(), "consumer": consumer},
+        )
+
+    async def envelope_record(
+        self, *, actor: str, project_id: str, domain: str, hydra_envelope: dict[str, Any],
+    ) -> dict[str, Any]:
+        env = Envelope(actor_id=actor, project_id=project_id, domain=domain)
+        return await self._client.call(
+            "eights.hydra.envelope.record",
+            {"envelope": env.to_json(), "hydra_envelope": hydra_envelope},
+        )
+
+    async def envelope_query(
+        self, *, actor: str, project_id: str, domain: str, **filters: Any,
+    ) -> list[dict[str, Any]]:
+        env = Envelope(actor_id=actor, project_id=project_id, domain=domain)
+        args = {"envelope": env.to_json(), **filters}
+        return await self._client.call("eights.hydra.envelope.query", args)
+
+    async def budget_charge(
+        self, *, actor: str, project_id: str, domain: str,
+        run_id: str, cost_usd: float, tokens: Optional[int] = None,
+    ) -> dict[str, Any]:
+        env = Envelope(actor_id=actor, project_id=project_id, domain=domain)
+        args: dict[str, Any] = {"envelope": env.to_json(), "run_id": run_id, "cost_usd": cost_usd}
+        if tokens is not None: args["tokens"] = tokens
+        return await self._client.call("eights.governance.budget.charge", args)
+
+    async def ceiling_tick(
+        self, *, actor: str, project_id: str, domain: str,
+        run_id: str, kind: str, delta: int = 1,
+    ) -> dict[str, Any]:
+        env = Envelope(actor_id=actor, project_id=project_id, domain=domain)
+        return await self._client.call(
+            "eights.governance.ceiling.tick",
+            {"envelope": env.to_json(), "run_id": run_id, "kind": kind, "delta": delta},
+        )
+
+    async def hitl_request(
+        self, *, actor: str, project_id: str, domain: str,
+        kind: str, payload: Any, run_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        env = Envelope(actor_id=actor, project_id=project_id, domain=domain)
+        args: dict[str, Any] = {"envelope": env.to_json(), "kind": kind, "payload": payload}
+        if run_id: args["run_id"] = run_id
+        return await self._client.call("eights.governance.hitl.request", args)
+
+    async def breaker_outcome(
+        self, *, actor: str, project_id: str, domain: str,
+        node_id: str, outcome: str,
+    ) -> dict[str, Any]:
+        env = Envelope(actor_id=actor, project_id=project_id, domain=domain)
+        return await self._client.call(
+            "eights.governance.breaker.outcome",
+            {"envelope": env.to_json(), "node_id": node_id, "outcome": outcome},
+        )
+
+    async def redact_for_squad(
+        self, *, actor: str, project_id: str, domain: str,
+        target_squad: str, payload: Any,
+    ) -> dict[str, Any]:
+        env = Envelope(actor_id=actor, project_id=project_id, domain=domain)
+        return await self._client.call(
+            "eights.governance.redact_for_squad",
+            {"envelope": env.to_json(), "target_squad": target_squad, "payload": payload},
+        )
+
+    async def resolve_handles(
+        self, *, actor: str, project_id: str, domain: str, handles: list[str],
+    ) -> list[dict[str, Any]]:
+        env = Envelope(actor_id=actor, project_id=project_id, domain=domain)
+        return await self._client.call(
+            "eights.memory.resolve_batch",
+            {"envelope": env.to_json(), "handles": handles},
+        )
+
+    async def squad_get(
+        self, *, actor: str, project_id: str, domain: str, squad_id: str,
+    ) -> Optional[dict[str, Any]]:
+        env = Envelope(actor_id=actor, project_id=project_id, domain=domain)
+        return await self._client.call(
+            "eights.squad.get",
+            {"envelope": env.to_json(), "squad_id": squad_id},
+        )
+
+    async def prompt_get(
+        self, *, actor: str, project_id: str, domain: str, rid: str,
+    ) -> Optional[dict[str, Any]]:
+        env = Envelope(actor_id=actor, project_id=project_id, domain=domain)
+        return await self._client.call(
+            "eights.prompt.get",
+            {"envelope": env.to_json(), "rid": rid},
+        )
+
+    async def cells_distribution(
+        self, *, actor: str, project_id: str, domain: str,
+        workflow_id: Optional[str] = None,
+    ) -> dict[str, int]:
+        env = Envelope(actor_id=actor, project_id=project_id, domain=domain)
+        scope: dict[str, Any] = {}
+        if workflow_id: scope["workflow_id"] = workflow_id
+        args = {"envelope": env.to_json()}
+        if scope: args["scope"] = scope
+        return await self._client.call("eights.cells.distribution", args)
+
     async def close(self) -> None:
         await self._client.close()
 

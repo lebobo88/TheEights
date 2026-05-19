@@ -13,6 +13,9 @@ export const ResourceKind = z.enum([
   "command",     // slash command (.md)
   "hook",        // lifecycle hook script
   "contract",    // AGENTS.md / CLAUDE.md class
+  "constitution",// user-covenant Immortal Head (Hydra manifesto)
+  "squad",       // Hydra squad (routing + budget + risk_tolerance bundle)
+  "redaction_policy", // per-squad redaction matrix
 ]);
 export type ResourceKind = z.infer<typeof ResourceKind>;
 
