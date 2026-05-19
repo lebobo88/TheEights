@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "eights": {
+      "command": "node",
+      "args": ["C:/AiAppDeployments/TheEights/daemon/dist/index.js"],
+      "env": {
+        "EIGHTS_LOG_LEVEL": "info"
+      }
+    }
+  }
+}

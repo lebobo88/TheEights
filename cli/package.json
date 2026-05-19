@@ -1,0 +1,25 @@
+{
+  "name": "@eights/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TheEights CLI — thin shim over the eights-daemon MCP surface",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "eights": "dist/index.js"
+  },
+  "engines": { "node": ">=20.0.0" },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "typescript": "^5.6.0",
+    "tsx": "^4.19.0"
+  }
+}
