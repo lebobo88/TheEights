@@ -1,21 +1,26 @@
 /**
  * EvolutionEngine — Autogenesis-aligned RSPL + SEPL.
  *
- * RSPL (Resource Substrate): versioned, content-addressed resource registry on
- * disk under ~/.eights/resources/<kind>/<rid>/<version>.{content,sig}.
+ * RSPL (Resource Substrate): versioned, content-addressed resource registry
+ * on disk under ~/.eights/resources/<sanitized-rid>/<version>.{content,sig}.
  *
  * SEPL (Self-Evolution Protocol): propose → evaluate → commit | queue-for-HITL
  * → approve/reject → rollback. Risk-class routing per ADR-0006.
+ *
+ * Phase 5: resources may carry source_paths that mirror the canonical content
+ * back into a consumer's filesystem. On commit, a WriteRouter dispatches to
+ * the matching WriteBridge per ADR-0007.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { SqliteStore } from "../stores/sqlite.js";
 import type { PolicyEngine } from "./policy.js";
 import type { AuditEngine } from "./audit.js";
+import type { WriteRouter, WriteResult } from "./writeback.js";
 import type { Envelope } from "../schemas/envelope.js";
 import type {
-  Resource, ResourceKind, RiskClass, EvolutionPolicy,
+  Resource, ResourceKind, RiskClass, EvolutionPolicy, Consumer, WritebackMode, ResourceSource,
 } from "../schemas/resource.js";
 import { DEFAULT_EVOLUTION_POLICY } from "../schemas/resource.js";
 import type { Proposal, ProposalStatus, EvaluationReport } from "../schemas/proposal.js";
@@ -34,11 +39,27 @@ export interface RegisterResourceInput {
   evolution_policy?: EvolutionPolicy;
   initial_content: string;
   audit_url?: string;
+  consumer?: Consumer;
+  source_paths?: string[];
+  writeback_mode?: WritebackMode;
+}
+
+export interface EvaluatorAdapter {
+  evaluate(input: {
+    rid: string;
+    kind: ResourceKind;
+    consumer: Consumer;
+    current_content: string;
+    candidate_content: string;
+  }): Promise<{ eval_delta: number; metric_scores: Record<string, number>; notes: string }>;
 }
 
 const CRITICAL_AUDIT_URL = "graph://resources/critical";
 
 export class EvolutionEngine {
+  private writeRouter: WriteRouter | null = null;
+  private evaluator: EvaluatorAdapter | null = null;
+
   constructor(
     private readonly sql: SqliteStore,
     private readonly resourcesDir: string,
@@ -48,33 +69,62 @@ export class EvolutionEngine {
     mkdirSync(this.resourcesDir, { recursive: true });
   }
 
+  setWriteRouter(router: WriteRouter): void { this.writeRouter = router; }
+  setEvaluator(ev: EvaluatorAdapter): void { this.evaluator = ev; }
+
   // ---------- RSPL ----------
 
-  /** Idempotent resource creation. Returns the resource record. */
   register(env: Envelope, input: RegisterResourceInput): Resource {
     const existing = this.getResource(input.rid);
-    if (existing) return existing;
+    if (existing) {
+      // Idempotent: if the resource already exists, attach any new source paths.
+      if (input.source_paths?.length) {
+        for (const p of input.source_paths) {
+          this.upsertSource(input.rid, p, input.consumer ?? "eights", input.writeback_mode ?? "in-place+branch");
+        }
+      }
+      return this.getResource(input.rid)!;
+    }
     const evolution_policy = input.evolution_policy ?? DEFAULT_EVOLUTION_POLICY[input.risk_class];
     const version = contentHash(input.initial_content);
     const now = new Date().toISOString();
     const audit_url = input.audit_url ?? `graph://resources/${input.rid}`;
+    const consumer = input.consumer ?? "eights";
     this.sql.db.prepare(
-      `INSERT INTO resources(rid, kind, risk_class, current_version, evolution_policy, audit_url, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?)`,
-    ).run(input.rid, input.kind, input.risk_class, version, evolution_policy, audit_url, now, now);
+      `INSERT INTO resources(rid, kind, risk_class, current_version, evolution_policy, audit_url, consumer, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).run(input.rid, input.kind, input.risk_class, version, evolution_policy, audit_url, consumer, now, now);
     this.writeVersion(input.rid, version, input.initial_content, "system:seed", "initial seed");
-    this.audit.record("evolution.register", env, { rid: input.rid, kind: input.kind, risk_class: input.risk_class });
+    if (input.source_paths) {
+      for (const p of input.source_paths) {
+        this.upsertSource(input.rid, p, consumer, input.writeback_mode ?? "in-place+branch");
+      }
+    }
+    this.audit.record("evolution.register", env, {
+      rid: input.rid, kind: input.kind, risk_class: input.risk_class, consumer, sources: input.source_paths ?? [],
+    });
     return this.getResource(input.rid)!;
+  }
+
+  private upsertSource(rid: string, source_path: string, consumer: Consumer, mode: WritebackMode): void {
+    this.sql.db.prepare(
+      `INSERT INTO resource_sources(rid, source_path, consumer, writeback_mode)
+       VALUES (?,?,?,?)
+       ON CONFLICT(rid, source_path) DO UPDATE SET consumer=excluded.consumer, writeback_mode=excluded.writeback_mode`,
+    ).run(rid, source_path, consumer, mode);
   }
 
   getResource(rid: string): Resource | null {
     const row = this.sql.db.prepare("SELECT * FROM resources WHERE rid = ?").get(rid) as
-      | { rid: string; kind: string; risk_class: string; current_version: string; evolution_policy: string; audit_url: string }
+      | { rid: string; kind: string; risk_class: string; current_version: string; evolution_policy: string; audit_url: string; consumer: string }
       | undefined;
     if (!row) return null;
     const versions = this.sql.db
       .prepare("SELECT * FROM resource_versions WHERE rid = ? ORDER BY created_at ASC")
       .all(rid) as Array<{ rid: string; version: string; content: string; signature: string; created_at: string; created_by: string; justification: string | null; evidence_memory_ids_json: string }>;
+    const sources = this.sql.db
+      .prepare("SELECT * FROM resource_sources WHERE rid = ?")
+      .all(rid) as Array<{ source_path: string; consumer: string; writeback_mode: string; last_written_version: string | null; last_written_at: string | null }>;
     return {
       rid: row.rid,
       kind: row.kind as ResourceKind,
@@ -82,6 +132,7 @@ export class EvolutionEngine {
       current_version: row.current_version,
       evolution_policy: row.evolution_policy as EvolutionPolicy,
       audit_url: row.audit_url,
+      consumer: (row.consumer ?? "eights") as Consumer,
       versions: versions.map((v) => ({
         version: v.version,
         content: v.content,
@@ -91,7 +142,25 @@ export class EvolutionEngine {
         justification: v.justification ?? undefined,
         evidence_memory_ids: JSON.parse(v.evidence_memory_ids_json) as string[],
       })),
+      sources: sources.map((s) => ({
+        source_path: s.source_path,
+        consumer: s.consumer as Consumer,
+        writeback_mode: s.writeback_mode as WritebackMode,
+        last_written_version: s.last_written_version ?? undefined,
+        last_written_at: s.last_written_at ?? undefined,
+      })),
     };
+  }
+
+  listResources(filter: { consumer?: Consumer; kind?: ResourceKind; risk?: RiskClass } = {}): Resource[] {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (filter.consumer) { where.push("consumer = ?"); params.push(filter.consumer); }
+    if (filter.kind) { where.push("kind = ?"); params.push(filter.kind); }
+    if (filter.risk) { where.push("risk_class = ?"); params.push(filter.risk); }
+    const sql = `SELECT rid FROM resources ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY rid`;
+    const rows = this.sql.db.prepare(sql).all(...params) as Array<{ rid: string }>;
+    return rows.map((r) => this.getResource(r.rid)!).filter(Boolean);
   }
 
   readVersion(rid: string, version: string): string | null {
@@ -124,39 +193,51 @@ export class EvolutionEngine {
     return this.getProposal(proposal_id)!;
   }
 
-  /** Run the eval suite for this resource and produce a report. v1: stub returns 0. */
+  /**
+   * Run the eval adapter for this proposal, falling back to a delta=0 stub if
+   * no adapter is registered. The full per-kind dispatch lives in eval/registry.ts.
+   */
   async evaluate(env: Envelope, proposal_id: string): Promise<EvaluationReport> {
     const proposal = this.getProposal(proposal_id);
     if (!proposal) throw new Error(`unknown proposal ${proposal_id}`);
+    const resource = this.getResource(proposal.resource_rid);
+    if (!resource) throw new Error(`unknown resource ${proposal.resource_rid}`);
     this.setStatus(proposal_id, "evaluating");
 
-    // SSGM gates apply at the eval stage so they're visible in the report.
+    let eval_delta = 0;
+    let metric_scores: Record<string, number> = {};
+    let notes = "no evaluator registered — delta=0 stub";
+
+    if (this.evaluator) {
+      try {
+        const current = this.readVersion(resource.rid, resource.current_version) ?? "";
+        const r = await this.evaluator.evaluate({
+          rid: resource.rid,
+          kind: resource.kind,
+          consumer: resource.consumer,
+          current_content: current,
+          candidate_content: proposal.candidate_content,
+        });
+        eval_delta = r.eval_delta;
+        metric_scores = r.metric_scores;
+        notes = r.notes;
+      } catch (err) {
+        notes = `evaluator threw: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
     const ssgm = {
       consistency: { passed: true, conflicts: [] as string[] },
       temporal_decay: { passed: true, reason: undefined as string | undefined },
       access_control: { passed: true, reason: undefined as string | undefined },
     };
-
-    const report: EvaluationReport = {
-      proposal_id,
-      eval_delta: 0,                 // v1 stub: no eval suite wired; Phase 3 follow-on plugs in per-resource evals
-      metric_scores: {},
-      ssgm_gate_results: ssgm,
-      notes: "v1 stub eval — returns 0 delta. Wire per-resource eval suites in a follow-on commit.",
-    };
-    this.sql.db.prepare(`UPDATE proposals SET evaluation_json = ? WHERE proposal_id = ?`)
-      .run(JSON.stringify(report), proposal_id);
-    this.audit.record("evolution.evaluate", env, { proposal_id, eval_delta: report.eval_delta });
+    const report: EvaluationReport = { proposal_id, eval_delta, metric_scores, ssgm_gate_results: ssgm, notes };
+    this.sql.db.prepare(`UPDATE proposals SET evaluation_json = ? WHERE proposal_id = ?`).run(JSON.stringify(report), proposal_id);
+    this.audit.record("evolution.evaluate", env, { proposal_id, eval_delta, kind: resource.kind, consumer: resource.consumer });
     return report;
   }
 
-  /**
-   * Commit a proposal. Routing per ADR-0006:
-   *   - resource.evolution_policy === "auto" AND eval_delta >= 0 → commit
-   *   - otherwise → queue for HITL (status stays pending; caller invokes approve())
-   *   - "frozen" → reject
-   */
-  async commit(env: Envelope, proposal_id: string): Promise<{ committed: boolean; reason: string; version?: string }> {
+  async commit(env: Envelope, proposal_id: string): Promise<{ committed: boolean; reason: string; version?: string; writeback?: WriteResult[] }> {
     const proposal = this.getProposal(proposal_id);
     if (!proposal) throw new Error(`unknown proposal ${proposal_id}`);
     const resource = this.getResource(proposal.resource_rid);
@@ -171,9 +252,7 @@ export class EvolutionEngine {
       return { committed: false, reason: "hitl-only — call approve() to commit" };
     }
     const evalReport = proposal.evaluation;
-    if (!evalReport) {
-      return { committed: false, reason: "must evaluate before commit" };
-    }
+    if (!evalReport) return { committed: false, reason: "must evaluate before commit" };
     if (evalReport.eval_delta < 0) {
       this.setStatus(proposal_id, "rejected", env.actor_id);
       this.audit.record("evolution.commit.rejected", env, { proposal_id, reason: "negative eval delta" });
@@ -182,8 +261,7 @@ export class EvolutionEngine {
     return this.performCommit(env, proposal_id);
   }
 
-  /** Operator override — used by HITL. Forces commit even on hitl-only resources. */
-  async approve(env: Envelope, proposal_id: string): Promise<{ committed: boolean; reason: string; version?: string }> {
+  async approve(env: Envelope, proposal_id: string): Promise<{ committed: boolean; reason: string; version?: string; writeback?: WriteResult[] }> {
     const proposal = this.getProposal(proposal_id);
     if (!proposal) throw new Error(`unknown proposal ${proposal_id}`);
     const resource = this.getResource(proposal.resource_rid);
@@ -204,14 +282,23 @@ export class EvolutionEngine {
     if (resource.evolution_policy === "frozen") throw new Error("frozen resource cannot be rolled back");
     const target = resource.versions.find((v) => v.version === to_version);
     if (!target) throw new Error(`unknown version ${to_version}`);
-    this.sql.db.prepare(`UPDATE resources SET current_version = ?, updated_at = datetime('now') WHERE rid = ?`)
-      .run(to_version, rid);
+    this.sql.db.prepare(`UPDATE resources SET current_version = ?, updated_at = datetime('now') WHERE rid = ?`).run(to_version, rid);
     this.audit.record("evolution.rollback", env, { rid, to_version });
     return { rid, current_version: to_version };
   }
 
+  /** Operator-signed unfreeze. Audited as a distinct event. */
+  unfreeze(env: Envelope, rid: string): void {
+    const resource = this.getResource(rid);
+    if (!resource) throw new Error(`unknown resource ${rid}`);
+    if (resource.evolution_policy !== "frozen") return;
+    // Defrost to hitl-only — never to auto.
+    this.sql.db.prepare(`UPDATE resources SET evolution_policy = 'hitl-only', updated_at = datetime('now') WHERE rid = ?`).run(rid);
+    this.audit.record("evolution.unfreeze", env, { rid, prior: "frozen", new: "hitl-only", operator: env.actor_id });
+  }
+
   listPending(): Proposal[] {
-    const rows = this.sql.db.prepare(`SELECT * FROM proposals WHERE status IN ('pending','evaluating') ORDER BY proposed_at ASC`).all() as Array<{ proposal_id: string }>;
+    const rows = this.sql.db.prepare(`SELECT proposal_id FROM proposals WHERE status IN ('pending','evaluating') ORDER BY proposed_at ASC`).all() as Array<{ proposal_id: string }>;
     return rows.map((r) => this.getProposal(r.proposal_id)!).filter(Boolean);
   }
 
@@ -238,21 +325,43 @@ export class EvolutionEngine {
 
   // ---------- Drift detection ----------
 
-  detectDrift(): Array<{ rid: string; on_disk_hash: string; recorded_hash: string }> {
+  detectDrift(): {
+    registry: Array<{ rid: string; on_disk_hash: string; recorded_hash: string }>;
+    sources: Array<{ rid: string; source_path: string; on_disk_hash: string; expected_version: string }>;
+  } {
     const resources = this.sql.db.prepare(`SELECT rid, current_version FROM resources`).all() as Array<{ rid: string; current_version: string }>;
-    const drift: Array<{ rid: string; on_disk_hash: string; recorded_hash: string }> = [];
+    const registry: Array<{ rid: string; on_disk_hash: string; recorded_hash: string }> = [];
+    const sources: Array<{ rid: string; source_path: string; on_disk_hash: string; expected_version: string }> = [];
+
     for (const r of resources) {
+      // Registry drift (our own store).
       const content = this.readVersion(r.rid, r.current_version);
       if (content === null) {
-        drift.push({ rid: r.rid, on_disk_hash: "MISSING", recorded_hash: r.current_version });
-        continue;
+        registry.push({ rid: r.rid, on_disk_hash: "MISSING", recorded_hash: r.current_version });
+      } else {
+        const actual = contentHash(content);
+        if (actual !== r.current_version) registry.push({ rid: r.rid, on_disk_hash: actual, recorded_hash: r.current_version });
       }
-      const actual = contentHash(content);
-      if (actual !== r.current_version) {
-        drift.push({ rid: r.rid, on_disk_hash: actual, recorded_hash: r.current_version });
+
+      // Consumer-source drift.
+      const sourceRows = this.sql.db.prepare(`SELECT source_path FROM resource_sources WHERE rid = ?`).all(r.rid) as Array<{ source_path: string }>;
+      for (const s of sourceRows) {
+        if (!existsSync(s.source_path)) {
+          sources.push({ rid: r.rid, source_path: s.source_path, on_disk_hash: "MISSING", expected_version: r.current_version });
+          continue;
+        }
+        try {
+          const text = readFileSync(s.source_path, "utf8");
+          const h = contentHash(text);
+          if (h !== r.current_version) {
+            sources.push({ rid: r.rid, source_path: s.source_path, on_disk_hash: h, expected_version: r.current_version });
+          }
+        } catch (err) {
+          sources.push({ rid: r.rid, source_path: s.source_path, on_disk_hash: `ERR:${(err as Error).message}`, expected_version: r.current_version });
+        }
       }
     }
-    return drift;
+    return { registry, sources };
   }
 
   // ---------- Seeds ----------
@@ -264,44 +373,79 @@ export class EvolutionEngine {
       scope: [], trace_id: "seed",
     };
     this.register(env, {
-      rid: "resource:eights.policy.evolution-defaults",
-      kind: "policy",
-      risk_class: "critical",
-      initial_content: JSON.stringify(DEFAULT_EVOLUTION_POLICY, null, 2),
-      audit_url: CRITICAL_AUDIT_URL,
+      rid: "resource:eights.policy.evolution-defaults", kind: "policy", risk_class: "critical",
+      initial_content: JSON.stringify(DEFAULT_EVOLUTION_POLICY, null, 2), audit_url: CRITICAL_AUDIT_URL,
     });
     this.register(env, {
-      rid: "resource:eights.policy.default",
-      kind: "policy",
-      risk_class: "critical",
+      rid: "resource:eights.policy.default", kind: "policy", risk_class: "critical",
       initial_content: "# Default policy bundle (v1)\n# See ADR-0005 and engines/policy.ts for the active rule set.\n",
       audit_url: CRITICAL_AUDIT_URL,
     });
     this.register(env, {
-      rid: "resource:eights.template.docs-prompt",
-      kind: "prompt",
-      risk_class: "low",
+      rid: "resource:eights.template.docs-prompt", kind: "prompt", risk_class: "low",
       initial_content: "You are a documentation author. Produce concise, technically accurate prose suitable for a senior engineering audience.",
     });
   }
 
   // ---------- Internals ----------
 
-  private async performCommit(env: Envelope, proposal_id: string): Promise<{ committed: boolean; reason: string; version: string }> {
+  private async performCommit(env: Envelope, proposal_id: string): Promise<{ committed: boolean; reason: string; version: string; writeback: WriteResult[] }> {
     const proposal = this.getProposal(proposal_id);
     if (!proposal) throw new Error("missing proposal");
+    const resource = this.getResource(proposal.resource_rid);
+    if (!resource) throw new Error("missing resource");
+
+    // 1. Canonical write to ~/.eights/resources/<rid>/<version>.content
     this.writeVersion(proposal.resource_rid, proposal.candidate_version, proposal.candidate_content, env.actor_id, proposal.justification);
     this.sql.db.prepare(`UPDATE resources SET current_version = ?, updated_at = datetime('now') WHERE rid = ?`)
       .run(proposal.candidate_version, proposal.resource_rid);
     this.setStatus(proposal_id, "committed", env.actor_id);
     this.audit.record("evolution.commit", env, { proposal_id, rid: proposal.resource_rid, version: proposal.candidate_version });
-    return { committed: true, reason: "ok", version: proposal.candidate_version };
+
+    // 2. Writeback to each registered source.
+    const writeback: WriteResult[] = [];
+    if (this.writeRouter && resource.sources.length) {
+      for (const s of resource.sources) {
+        if (s.writeback_mode === "none") continue;
+        const result = await this.writeRouter.write({
+          rid: proposal.resource_rid,
+          version: proposal.candidate_version,
+          content: proposal.candidate_content,
+          source_path: s.source_path,
+          writeback_mode: s.writeback_mode,
+          proposal_id,
+          justification: proposal.justification,
+        });
+        writeback.push(result);
+        if (result.ok) {
+          this.sql.db.prepare(
+            `UPDATE resource_sources SET last_written_version = ?, last_written_at = ? WHERE rid = ? AND source_path = ?`,
+          ).run(proposal.candidate_version, new Date().toISOString(), proposal.resource_rid, s.source_path);
+          this.audit.record("evolution.writeback", env, { rid: proposal.resource_rid, source_path: s.source_path, version: proposal.candidate_version, mode: result.mode_used, git_commit: result.git_commit });
+        } else {
+          this.audit.record("evolution.writeback.failed", env, { rid: proposal.resource_rid, source_path: s.source_path, error: result.error });
+        }
+      }
+    }
+
+    return { committed: true, reason: "ok", version: proposal.candidate_version, writeback };
+  }
+
+  /** Used by registrars when a source file is updated outside the evolution flow but should still be tracked as the current canonical version. */
+  importFromSource(env: Envelope, rid: string, content: string, justification: string): string {
+    const resource = this.getResource(rid);
+    if (!resource) throw new Error(`unknown resource ${rid}`);
+    const version = contentHash(content);
+    if (version === resource.current_version) return version;
+    this.writeVersion(rid, version, content, env.actor_id, justification);
+    this.sql.db.prepare(`UPDATE resources SET current_version = ?, updated_at = datetime('now') WHERE rid = ?`).run(version, rid);
+    this.audit.record("evolution.import_from_source", env, { rid, version, justification });
+    return version;
   }
 
   private setStatus(proposal_id: string, status: ProposalStatus, decided_by?: string): void {
     if (decided_by) {
-      this.sql.db.prepare(`UPDATE proposals SET status = ?, decided_at = datetime('now'), decided_by = ? WHERE proposal_id = ?`)
-        .run(status, decided_by, proposal_id);
+      this.sql.db.prepare(`UPDATE proposals SET status = ?, decided_at = datetime('now'), decided_by = ? WHERE proposal_id = ?`).run(status, decided_by, proposal_id);
     } else {
       this.sql.db.prepare(`UPDATE proposals SET status = ? WHERE proposal_id = ?`).run(status, proposal_id);
     }
@@ -326,15 +470,22 @@ export class EvolutionEngine {
   }
 }
 
-function contentHash(s: string): string {
+export function contentHash(s: string): string {
   return "sha256:" + createHash("sha256").update(s, "utf8").digest("hex");
 }
 
 function signature(s: string): string {
-  // v1: HMAC-less self-signature derived from content hash. Phase 4 swaps in a real keyed signature.
   return "v1:" + createHash("sha256").update("eights/v1/" + s, "utf8").digest("hex").slice(0, 40);
 }
 
 function sanitizeRid(rid: string): string {
   return rid.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+export function hashFileContent(path: string): string | null {
+  try {
+    if (!existsSync(path)) return null;
+    statSync(path); // stat to surface permission errors
+    return contentHash(readFileSync(path, "utf8"));
+  } catch { return null; }
 }

@@ -421,9 +421,11 @@ These cannot be modified by the Evolution Engine, ever:
 
 1. **Tenant + scope isolation** — no resource version can broaden access.
 2. **Audit logging** — no resource can disable or alter the audit engine.
-3. **Safety filters** — `risk_class=critical` resources are `frozen` by default.
+3. **Safety filters** — `risk_class=critical` resources are `frozen` by default. The frozen roster explicitly includes: TheEights' own policies; ExecutiveSuite `executive-protocol` / `ai-governance` / `financial-frameworks` skills; pair-programmer security / contract / spec rubrics; RLM safety hooks (`pre-tool-safety`, `session-*`, `stop-checkpoint`, `post-state-write-verify`); Hydra HITL gates and redactor configs.
 4. **Memory immutability of facts under audit** — facts referenced by an open Decision cannot be deleted, only superseded.
 5. **HITL bypass prohibition** — no policy can grant auto-commit to non-`low` risk classes without an explicit operator-signed override.
+6. **WriteBridge sandboxing** — no `WriteBridge.write()` may target a path outside its consumer's allowlisted root (enforced via `path.resolve`-containment check + integration test). See ADR-0007.
+7. **Eval rubric immutability under evolution** — per-kind judge rubrics (`resource:eights.eval-rubric.*`) are `risk_class=critical, evolution_policy=frozen`. Evolution cannot mutate the criteria it is evaluated by. See ADR-0008.
 
 ---
 

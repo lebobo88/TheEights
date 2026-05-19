@@ -4,7 +4,11 @@ Phased delivery, aligned with §10.2 of the reference architecture doc.
 
 ## Status snapshot (2026-05-19)
 
-Phases 0 → 4 are all wired and passing tests. `eights-daemon` v0.2.0 boots with **31 MCP tools** across `memory.*`, `identity.*`, `audit.*`, `governance.*`, `evolution.*`, `adapters.{pp,exec,rlm}.*`, `miner.*`. CLI `eights` covers `init / status / memory / ingest / miner / bom / review`. Hydra Python helper at `integrations/hydra/eights_memory.py`. 12/12 vitest passing (memory smoke, vec round-trip, governance gates, evolution lifecycle).
+**Phase 5 complete — self-evolution loop extends into Hydra, ExecutiveSuite, pair-programmer, and the entire RLM family.** `eights-daemon` v0.3.0 boots with **35+ MCP tools**, four WriteBridges with sandbox-enforced writeback to `theeights/auto` git side-branches, four bulk registrars, and four EvalAdapters (LLM-judge for prose, YAML-structural for teams/workflows, rubric-backtest for rubrics, NoopEval catch-all). 32/32 vitest passing across 8 files.
+
+Live deployment numbers: **1,284 evolvable resources** registered (pp: 59, hydra: 8 squads, execsuite: 42, rlm family: 1,175). Critical-frozen roster: 8 Hydra squads (carry tool-privilege escalation), 3 ExecutiveSuite governance skills (ai-governance, executive-protocol, financial-frameworks), 5 eval judge rubrics, 2 eights policies, plus RLM safety hooks per project. CycloneDX ML-BOM v1.7 emits 1,288 components. Hash-chained audit log clean.
+
+## Phase 0 — Foundations (DONE)
 
 ## Phase 0 — Foundations (DONE)
 

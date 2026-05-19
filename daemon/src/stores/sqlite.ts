@@ -18,7 +18,30 @@ export class SqliteStore {
   }
 
   migrate(): void {
-    this.db.exec(MIGRATIONS);
+    // Two-pass migration: ensure base tables, then apply v2 ALTER (no-op if column exists).
+    this.db.exec(MIGRATIONS_V1);
+    this.applyV2();
+  }
+
+  private applyV2(): void {
+    const cols = this.db.prepare(`PRAGMA table_info(resources)`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "consumer")) {
+      this.db.exec(`ALTER TABLE resources ADD COLUMN consumer TEXT NOT NULL DEFAULT 'eights'`);
+    }
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS resource_sources (
+        rid TEXT NOT NULL,
+        source_path TEXT NOT NULL,
+        consumer TEXT NOT NULL,
+        writeback_mode TEXT NOT NULL DEFAULT 'in-place+branch',
+        last_written_version TEXT,
+        last_written_at TEXT,
+        PRIMARY KEY (rid, source_path),
+        FOREIGN KEY (rid) REFERENCES resources(rid)
+      );
+      CREATE INDEX IF NOT EXISTS idx_resource_sources_consumer ON resource_sources(consumer);
+      INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (2, datetime('now'));
+    `);
   }
 
   close(): void {
@@ -26,7 +49,7 @@ export class SqliteStore {
   }
 }
 
-const MIGRATIONS = `
+const MIGRATIONS_V1 = `
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL

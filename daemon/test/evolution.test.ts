@@ -64,8 +64,9 @@ describe("evolution — RSPL + SEPL + risk routing", () => {
     expect(result.current_version).toBe(first.version);
   });
 
-  it("detects drift when on-disk content differs from recorded hash", () => {
+  it("detectDrift returns both registry and consumer-source buckets", () => {
     const drift = engine.detectDrift();
-    expect(Array.isArray(drift)).toBe(true);
+    expect(Array.isArray(drift.registry)).toBe(true);
+    expect(Array.isArray(drift.sources)).toBe(true);
   });
 });
