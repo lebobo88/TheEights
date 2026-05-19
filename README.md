@@ -27,16 +27,30 @@ It is **not** an orchestrator. It is **not** an agent framework. It is the subst
 
 See `ROADMAP.md`.
 
-## Quickstart (Phase 0)
+## Quickstart
+
+### 1. Build
 
 ```powershell
 cd C:\AiAppDeployments\TheEights\daemon
 npm install
 npm run build
-npm start              # starts eights-daemon on stdio
 ```
 
-Then point any MCP-capable client (Claude Code, Copilot CLI, Gemini CLI, Codex CLI) at the daemon via `.mcp.json`:
+(Repeat under `cli/` if you intend to use the `eights` CLI.)
+
+### 2. Register the MCP server
+
+**Recommended — user scope (available in every project on this machine):**
+
+```powershell
+claude mcp add eights --scope user -- node C:/AiAppDeployments/TheEights/daemon/dist/index.js
+claude mcp get eights      # expect: Scope: User config • Status: ✓ Connected
+```
+
+This writes to `~/.claude.json` (do not edit by hand). To remove later: `claude mcp remove eights -s user`. Restart any open Claude Code session for the registration to take effect — MCP servers are discovered at session start.
+
+**Alternative — project scope** (a single project's `.mcp.json`, e.g. when pinning a specific build):
 
 ```jsonc
 {
@@ -48,6 +62,8 @@ Then point any MCP-capable client (Claude Code, Copilot CLI, Gemini CLI, Codex C
   }
 }
 ```
+
+The daemon reads `$env:EIGHTS_HOME` (default `~/.eights/`) and creates it on first run. The `eights` CLI is intentionally not added to PATH; invoke it as `node C:/AiAppDeployments/TheEights/cli/dist/index.js <cmd>` when needed.
 
 ## Layout
 
