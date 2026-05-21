@@ -52,8 +52,9 @@ import { LlmJudgeEval } from "./engines/eval/llm-judge.js";
 import { YamlStructuralEval } from "./engines/eval/yaml-structural.js";
 import { RubricBacktestEval } from "./engines/eval/rubric-backtest.js";
 import { NoopEval } from "./engines/eval/noop.js";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { registerMemoryTools } from "./mcp/memory.js";
 import { registerIdentityTools } from "./mcp/identity.js";
@@ -69,10 +70,95 @@ import { registerPromptTools } from "./mcp/prompt.js";
 import { startMcpServer, type ToolMap } from "./mcp/server.js";
 import type { Envelope } from "./schemas/envelope.js";
 
+/**
+ * D2b — Singleton pidfile guard.
+ *
+ * AgentSmith's EightsBridge spawns this same dist as a child process; Claude
+ * Code's MCP host ALSO spawns it via the eights .mcp.json registration. Both
+ * instances would race on SqliteStore.migrate() and audit.verifyChain(), one
+ * of them ending up in process.exit(2) with no log file written. The pidfile
+ * makes the second spawn refuse cleanly so whichever instance wins, the loser
+ * exits 0 and emits a diagnostic stderr line — far more debuggable than the
+ * MCP host's bare -32000.
+ *
+ * Returns false when this process is the leader (continue startup), true when
+ * another live daemon already holds the lock (caller should exit cleanly).
+ */
+function checkSingletonGuard(home: string): boolean {
+  const pidPath = join(home, "eights.pid");
+  if (existsSync(pidPath)) {
+    try {
+      const raw = readFileSync(pidPath, "utf8").trim();
+      const otherPid = Number.parseInt(raw, 10);
+      if (Number.isFinite(otherPid) && otherPid > 0 && otherPid !== process.pid) {
+        // `process.kill(pid, 0)` is a permission/existence probe — throws ESRCH
+        // when the PID is dead, returns true when alive (or EPERM, which still
+        // means the process exists).
+        try {
+          process.kill(otherPid, 0);
+          process.stderr.write(
+            `[eights-daemon] another instance already running pid=${otherPid} — refusing to start (pid=${process.pid})\n`,
+          );
+          return true;
+        } catch {
+          // Stale pidfile — owner is dead. Fall through and reclaim.
+          process.stderr.write(
+            `[eights-daemon] reclaiming stale pidfile (owner pid=${otherPid} dead)\n`,
+          );
+        }
+      }
+    } catch (err) {
+      process.stderr.write(
+        `[eights-daemon] could not read pidfile at ${pidPath}: ${String(err)} — overwriting\n`,
+      );
+    }
+  }
+  try {
+    mkdirSync(home, { recursive: true });
+    writeFileSync(pidPath, String(process.pid), "utf8");
+  } catch (err) {
+    // Failing to write the pidfile is non-fatal — we just can't enforce the
+    // singleton invariant. Continue startup; worst case is the historical
+    // dual-spawn race, which is no worse than the pre-D2b world.
+    process.stderr.write(
+      `[eights-daemon] could not write pidfile at ${pidPath}: ${String(err)} — continuing without singleton guard\n`,
+    );
+  }
+  return false;
+}
+
+function clearPidfile(home: string): void {
+  const pidPath = join(home, "eights.pid");
+  try {
+    // Only delete if we still own it (defensive against a race where another
+    // instance reclaimed a stale file and stamped its own PID).
+    if (existsSync(pidPath)) {
+      const raw = readFileSync(pidPath, "utf8").trim();
+      if (Number.parseInt(raw, 10) === process.pid) {
+        unlinkSync(pidPath);
+      }
+    }
+  } catch {
+    // Best-effort; pidfile cleanup must never crash the shutdown path.
+  }
+}
+
 async function main(): Promise<void> {
+  // Stderr boot tag — survives logger failures, lets the operator confirm in
+  // Claude Code's MCP error pane that the spawn actually fired. Stderr is safe
+  // for stdio MCP transport: only stdout matters for JSON-RPC framing.
+  process.stderr.write(`[eights-daemon] booting pid=${process.pid}\n`);
+
   const cfg = loadConfig();
+
+  // D2b — refuse to start if another live daemon already owns ~/.eights/.
+  // See `checkSingletonGuard` doc-comment for the dual-spawn race this closes.
+  if (checkSingletonGuard(cfg.home)) {
+    process.exit(0);
+  }
+
   const log = makeLogger(cfg.logsDir);
-  log.info({ cfg }, "eights-daemon booting");
+  log.info({ cfg, pid: process.pid }, "eights-daemon booting");
 
   const sql = new SqliteStore(cfg.statePath);
   sql.migrate();
@@ -87,7 +173,34 @@ async function main(): Promise<void> {
 
   const audit = new AuditEngine(sql, cfg.eventsDir);
   const chain = audit.verifyChain();
-  if (!chain.ok) { log.error({ broken_at: chain.broken_at }, "AUDIT CHAIN BROKEN"); process.exit(2); }
+  if (!chain.ok) {
+    // D2b — diagnostics first. The bootstrap session's -32000 was THIS exit
+    // path firing under the dual-spawn race (AgentSmith + Claude Code MCP
+    // host both spawning, hash chain interleaved). Now that the singleton
+    // guard above prevents the race, future spawns will keep the chain
+    // intact — but historical damage persists until the operator repairs.
+    //
+    // EIGHTS_SKIP_AUDIT_CHECK=1 lets the operator boot the daemon despite
+    // a broken chain so MCP tools come back online. Audit writes from the
+    // current session continue past `broken_at`; forensic repair (chain
+    // rebuild from `~/.eights/events/*.jsonl`) is a separate operation.
+    log.error({ broken_at: chain.broken_at }, "AUDIT CHAIN BROKEN");
+    process.stderr.write(
+      `[eights-daemon] AUDIT CHAIN BROKEN at row ${chain.broken_at}. ` +
+      `Set EIGHTS_SKIP_AUDIT_CHECK=1 in .mcp.json env to boot anyway.\n`,
+    );
+    if (process.env.EIGHTS_SKIP_AUDIT_CHECK !== "1") {
+      // Throw instead of process.exit(2) so the diagnostic flows through the
+      // bottom-of-file `main().catch` handler which writes a useful stderr
+      // line + clears the pidfile. Bare process.exit(2) killed the daemon
+      // before Claude Code could surface anything other than -32000.
+      throw new Error(`AUDIT CHAIN BROKEN at ${chain.broken_at}`);
+    }
+    process.stderr.write(
+      `[eights-daemon] EIGHTS_SKIP_AUDIT_CHECK=1 set — continuing despite broken chain\n`,
+    );
+    log.warn({ broken_at: chain.broken_at }, "audit chain check skipped per EIGHTS_SKIP_AUDIT_CHECK=1");
+  }
 
   const policy = new PolicyEngine(sql);
   const embedder = new OllamaEmbedder();
@@ -199,6 +312,7 @@ async function main(): Promise<void> {
     stewardJob.stop(); costJob.stop(); iolausJob.stop(); otel.stop();
     try { await graph.close(); } catch { /* ignore */ }
     sql.close();
+    clearPidfile(cfg.home);  // D2b — release the singleton guard
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));
@@ -261,6 +375,15 @@ function seedConstitutions(c: ConstitutionEngine, log: ReturnType<typeof makeLog
 }
 
 main().catch((err) => {
+  // D2b — also release the pidfile so a successor spawn can take over. We
+  // re-derive cfg.home from the same env-var resolution loadConfig() uses
+  // because at this point we don't know whether loadConfig itself completed.
+  try {
+    const home = process.env.EIGHTS_HOME ?? join(homedir(), ".eights");
+    clearPidfile(home);
+  } catch {
+    /* ignore */
+  }
   // eslint-disable-next-line no-console
   console.error("eights-daemon failed to start:", err);
   process.exit(1);
