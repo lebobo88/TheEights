@@ -27,16 +27,16 @@ interface PpRunRow {
 
 interface PpVerdictRow {
   id: string;
-  run_id: string;
-  stage_id: string;
+  run_id: string;          // derived via JOIN attempts -> stages
+  attempt_id: string;      // pp verdicts.attempt_id (verdicts attach to attempts, not stages)
   judge_producer: string;
-  judge_model: string;
+  judge_model_id: string;  // pp column is judge_model_id, not judge_model
   rubric_id: string;
   outcome: string;
   critique_md: string | null;
   score_json: string | null;
   cross_vendor: number;
-  recorded_at: string;
+  created_at: string;      // pp column is created_at, not recorded_at
 }
 
 export interface PpWatcherOptions {
@@ -168,15 +168,20 @@ export class PpWatcher {
   private async ingestVerdicts(): Promise<number> {
     if (!this.ppDb) return 0;
     const watermark = this.getWatermark("verdicts");
+    // pp schema topology: runs -> stages -> attempts -> verdicts. verdicts have
+    // `attempt_id` (NOT stage_id); to derive run_id + stage_kind we hop through
+    // attempts -> stages. Field names: judge_model_id (not judge_model),
+    // created_at (not recorded_at). See pair-programmer/daemon/src/db/schema.ts.
     const rows = this.ppDb
       .prepare(
-        `SELECT v.id, v.stage_id, s.run_id, v.judge_producer, v.judge_model, v.rubric_id,
-                v.outcome, v.critique_md, v.score_json, v.cross_vendor, v.recorded_at,
-                s.kind as stage_kind
+        `SELECT v.id, v.attempt_id, s.run_id, v.judge_producer, v.judge_model_id,
+                v.rubric_id, v.outcome, v.critique_md, v.score_json,
+                v.cross_vendor, v.created_at, s.kind as stage_kind
          FROM verdicts v
-         JOIN stages s ON s.id = v.stage_id
-         WHERE v.recorded_at > ?
-         ORDER BY v.recorded_at ASC
+         JOIN attempts a ON a.id = v.attempt_id
+         JOIN stages s ON s.id = a.stage_id
+         WHERE v.created_at > ?
+         ORDER BY v.created_at ASC
          LIMIT 500`,
       )
       .all(watermark) as Array<PpVerdictRow & { stage_kind: string }>;
@@ -202,7 +207,7 @@ export class PpWatcher {
         score,
         critique_md: r.critique_md ?? "",
       });
-      if (r.recorded_at > highWater) highWater = r.recorded_at;
+      if (r.created_at > highWater) highWater = r.created_at;
     }
     this.setWatermark("verdicts", highWater);
     this.log.info({ count: rows.length, watermark: highWater }, "pp-watcher: ingested verdicts");
@@ -211,10 +216,12 @@ export class PpWatcher {
 
   private summarizeVerdicts(runId: string): { passed: number; failed: number; surfaced: number } {
     if (!this.ppDb) return { passed: 0, failed: 0, surfaced: 0 };
+    // Same topology fix as ingestVerdicts — verdicts -> attempts -> stages.
     const rows = this.ppDb
       .prepare(
         `SELECT v.outcome, COUNT(*) as n FROM verdicts v
-         JOIN stages s ON s.id = v.stage_id
+         JOIN attempts a ON a.id = v.attempt_id
+         JOIN stages s ON s.id = a.stage_id
          WHERE s.run_id = ? GROUP BY v.outcome`,
       )
       .all(runId) as Array<{ outcome: string; n: number }>;
