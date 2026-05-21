@@ -22,7 +22,7 @@ interface PpRunRow {
   status: string;
   profile_snapshot_json: string | null;
   taxonomy_mapping_json: string | null;
-  finalized_at: string | null;
+  finished_at: string | null;
 }
 
 interface PpVerdictRow {
@@ -124,13 +124,15 @@ export class PpWatcher {
   private async ingestFinalizedRuns(): Promise<number> {
     if (!this.ppDb) return 0;
     const watermark = this.getWatermark("runs");
-    // pp schema: runs(id, request_text, status, profile_snapshot_json, taxonomy_mapping_json, finalized_at, ...)
+    // pp schema: runs(id, request_text, status, profile_snapshot_json, taxonomy_mapping_json, finished_at, ...)
+    // RunStatus enum (pp/daemon/src/config.ts:79): "pending" | "running" | "surfaced" | "complete" | "crashed" | "aborted".
+    // We ingest any TERMINAL run — complete (clean), surfaced (HITL gate), aborted (B7 supervisor crash drain), crashed.
     const rows = this.ppDb
       .prepare(
-        `SELECT id, request_text, status, profile_snapshot_json, taxonomy_mapping_json, finalized_at
+        `SELECT id, request_text, status, profile_snapshot_json, taxonomy_mapping_json, finished_at
          FROM runs
-         WHERE status IN ('finalized','surfaced') AND finalized_at IS NOT NULL AND finalized_at > ?
-         ORDER BY finalized_at ASC
+         WHERE status IN ('complete','surfaced','aborted','crashed') AND finished_at IS NOT NULL AND finished_at > ?
+         ORDER BY finished_at ASC
          LIMIT 200`,
       )
       .all(watermark) as PpRunRow[];
@@ -156,7 +158,7 @@ export class PpWatcher {
         missability: this.collectMissability(r.id),
         artifacts: this.collectArtifacts(r.id),
       });
-      if (r.finalized_at && r.finalized_at > highWater) highWater = r.finalized_at;
+      if (r.finished_at && r.finished_at > highWater) highWater = r.finished_at;
     }
     this.setWatermark("runs", highWater);
     this.log.info({ count: rows.length, watermark: highWater }, "pp-watcher: ingested finalized runs");
