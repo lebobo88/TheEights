@@ -6,7 +6,8 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "eights-daemon": "dist/index.js"
+    "eights-daemon": "dist/index.js",
+    "eights-audit-repair": "dist/audit-repair.js"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -75,8 +75,14 @@ export class PpWatcher {
     }
     this.running = true;
     this.log.info({ ppStatePath: this.ppStatePath, pollMs: this.pollMs }, "pp-watcher started");
+    // D2c — defer the first tick by pollMs instead of firing it immediately on
+    // start. The boot-time tick used to dominate the event loop for tens of
+    // seconds (rejected memory writes against the consistency gate, each one
+    // taking the IMMEDIATE write lock on the audit log) which starved the MCP
+    // stdio transport's stdin reads and caused Claude Code's 30s connection
+    // timeout. Letting the first tick run after pollMs gives the MCP handshake
+    // (initialize + tools/list) plenty of room to land first.
     this.timer = setInterval(() => void this.tick(), this.pollMs);
-    void this.tick();
   }
 
   stop(): void {
@@ -159,6 +165,9 @@ export class PpWatcher {
         artifacts: this.collectArtifacts(r.id),
       });
       if (r.finished_at && r.finished_at > highWater) highWater = r.finished_at;
+      // D2c — yield to the macrotask queue between rows so MCP stdin reads
+      // don't starve when ingesting a backlog.
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
     this.setWatermark("runs", highWater);
     this.log.info({ count: rows.length, watermark: highWater }, "pp-watcher: ingested finalized runs");
@@ -208,6 +217,8 @@ export class PpWatcher {
         critique_md: r.critique_md ?? "",
       });
       if (r.created_at > highWater) highWater = r.created_at;
+      // D2c — yield (see ingestFinalizedRuns).
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
     this.setWatermark("verdicts", highWater);
     this.log.info({ count: rows.length, watermark: highWater }, "pp-watcher: ingested verdicts");

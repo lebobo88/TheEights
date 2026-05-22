@@ -41,8 +41,8 @@ export class RlmWatcher {
     }
     this.running = true;
     this.log.info({ root: this.root, pollMs: this.pollMs }, "rlm-watcher started");
+    // D2c — first tick deferred by pollMs; see pp-watcher.start() comment.
     this.timer = setInterval(() => void this.tick(), this.pollMs);
-    void this.tick();
   }
 
   stop(): void {

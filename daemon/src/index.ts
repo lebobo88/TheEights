@@ -71,60 +71,34 @@ import { startMcpServer, type ToolMap } from "./mcp/server.js";
 import type { Envelope } from "./schemas/envelope.js";
 
 /**
- * D2b — Singleton pidfile guard.
+ * D2c — write the current PID to ~/.eights/eights.pid as a diagnostic breadcrumb,
+ * NOT as a singleton lock.
  *
- * AgentSmith's EightsBridge spawns this same dist as a child process; Claude
- * Code's MCP host ALSO spawns it via the eights .mcp.json registration. Both
- * instances would race on SqliteStore.migrate() and audit.verifyChain(), one
- * of them ending up in process.exit(2) with no log file written. The pidfile
- * makes the second spawn refuse cleanly so whichever instance wins, the loser
- * exits 0 and emits a diagnostic stderr line — far more debuggable than the
- * MCP host's bare -32000.
+ * History: D2b introduced a singleton pidfile guard to suppress a dual-spawn
+ * race between AgentSmith's EightsBridge child and Claude Code's MCP host
+ * (both raced on SqliteStore.migrate + audit.verifyChain). The guard worked
+ * for that one symptom but broke every legitimate concurrent spawn: stdio MCP
+ * gives every client its own child (Claude Code session, AgentSmith bridge,
+ * pair-programmer, etc.), and they are supposed to coexist. The refusal
+ * surfaced to the MCP host as -32000 — the child exited cleanly with no
+ * transport attached.
  *
- * Returns false when this process is the leader (continue startup), true when
- * another live daemon already holds the lock (caller should exit cleanly).
+ * D2c removes the refusal. SQLite WAL mode already serializes writes safely
+ * across concurrent opens, and the audit chain's tamper detection plus the
+ * `eights audit:repair` tool provide a forensic recovery path if a write race
+ * does manage to break linkage. The pidfile is retained as a diagnostic
+ * breadcrumb for operator triage and for the repair tool's snapshot phase.
  */
-function checkSingletonGuard(home: string): boolean {
+function recordPidfile(home: string): void {
   const pidPath = join(home, "eights.pid");
-  if (existsSync(pidPath)) {
-    try {
-      const raw = readFileSync(pidPath, "utf8").trim();
-      const otherPid = Number.parseInt(raw, 10);
-      if (Number.isFinite(otherPid) && otherPid > 0 && otherPid !== process.pid) {
-        // `process.kill(pid, 0)` is a permission/existence probe — throws ESRCH
-        // when the PID is dead, returns true when alive (or EPERM, which still
-        // means the process exists).
-        try {
-          process.kill(otherPid, 0);
-          process.stderr.write(
-            `[eights-daemon] another instance already running pid=${otherPid} — refusing to start (pid=${process.pid})\n`,
-          );
-          return true;
-        } catch {
-          // Stale pidfile — owner is dead. Fall through and reclaim.
-          process.stderr.write(
-            `[eights-daemon] reclaiming stale pidfile (owner pid=${otherPid} dead)\n`,
-          );
-        }
-      }
-    } catch (err) {
-      process.stderr.write(
-        `[eights-daemon] could not read pidfile at ${pidPath}: ${String(err)} — overwriting\n`,
-      );
-    }
-  }
   try {
     mkdirSync(home, { recursive: true });
     writeFileSync(pidPath, String(process.pid), "utf8");
   } catch (err) {
-    // Failing to write the pidfile is non-fatal — we just can't enforce the
-    // singleton invariant. Continue startup; worst case is the historical
-    // dual-spawn race, which is no worse than the pre-D2b world.
     process.stderr.write(
-      `[eights-daemon] could not write pidfile at ${pidPath}: ${String(err)} — continuing without singleton guard\n`,
+      `[eights-daemon] could not write pidfile at ${pidPath}: ${String(err)} — continuing\n`,
     );
   }
-  return false;
 }
 
 function clearPidfile(home: string): void {
@@ -151,11 +125,16 @@ async function main(): Promise<void> {
 
   const cfg = loadConfig();
 
-  // D2b — refuse to start if another live daemon already owns ~/.eights/.
-  // See `checkSingletonGuard` doc-comment for the dual-spawn race this closes.
-  if (checkSingletonGuard(cfg.home)) {
-    process.exit(0);
-  }
+  // D2c — record this process in the pidfile for diagnostics, but do NOT refuse
+  // to start when another instance is alive. Stdio MCP gives every client its
+  // own child (Claude Code session, AgentSmith EightsBridge, pair-programmer,
+  // etc.); they are supposed to coexist. The earlier singleton guard refused
+  // every spawn-after-the-first, which surfaced to the MCP host as -32000 (the
+  // child exited cleanly with no transport attached). SQLite WAL mode + the
+  // audit chain's hash-linkage already tolerate concurrent appends safely, and
+  // the audit-repair tool provides a recovery path if a chain break is ever
+  // detected. Singleton-style invariants do not belong in per-client transports.
+  recordPidfile(cfg.home);
 
   const log = makeLogger(cfg.logsDir);
   log.info({ cfg, pid: process.pid }, "eights-daemon booting");
@@ -265,19 +244,28 @@ async function main(): Promise<void> {
   const stewardJob = new MemoryStewardJob(sql, memory, audit, log);
   const costJob = new CostAnalystJob(sql, memory, audit, log);
   const iolausJob = new IolausJob(sql, evolution, memory, audit, log);
-  stewardJob.start();
-  costJob.start();
-  iolausJob.start();
 
   const ppBridge = new PpBridge(memory);
   const ppWatcher = new PpWatcher(sql, ppBridge, log);
-  ppWatcher.start();
   const execBridge = new ExecSuiteBridge(memory);
   const execWatcher = new ExecSuiteWatcher(sql, execBridge, log);
-  execWatcher.start();
   const rlmBridge = new RlmBridge(memory);
   const rlmWatcher = new RlmWatcher(sql, rlmBridge, log);
-  rlmWatcher.start();
+
+  // D2c — escape hatch. EIGHTS_DISABLE_WATCHERS=1 skips all watchers + scheduled
+  // jobs entirely. Use when a watcher's consumer DB is wedged or when an
+  // operator needs the MCP transport up urgently without the background load.
+  const watchersDisabled = process.env.EIGHTS_DISABLE_WATCHERS === "1";
+  if (watchersDisabled) {
+    log.warn("EIGHTS_DISABLE_WATCHERS=1 — skipping all watchers and scheduled jobs");
+  } else {
+    stewardJob.start();
+    costJob.start();
+    iolausJob.start();
+    ppWatcher.start();
+    execWatcher.start();
+    rlmWatcher.start();
+  }
 
   const registrars = {
     pp: new PpRegistrar(evolution, log),
@@ -287,7 +275,7 @@ async function main(): Promise<void> {
   };
 
   const miner = new Miner(sql, memory, audit, log, evolution, completer);
-  miner.startScheduled();
+  if (!watchersDisabled) miner.startScheduled();
 
   const bom = new BomEngine(sql);
 

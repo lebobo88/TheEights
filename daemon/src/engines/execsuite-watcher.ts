@@ -44,8 +44,8 @@ export class ExecSuiteWatcher {
     }
     this.running = true;
     this.log.info({ outputRoot: this.outputRoot, pollMs: this.pollMs }, "execsuite-watcher started");
+    // D2c — first tick deferred by pollMs; see pp-watcher.start() comment.
     this.timer = setInterval(() => void this.tick(), this.pollMs);
-    void this.tick();
   }
 
   stop(): void {
