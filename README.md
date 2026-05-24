@@ -189,10 +189,30 @@ TheEights is the shared substrate — these systems read from and write to it bu
 
 | Project | Role in the Ecosystem | Integration |
 |---------|----------------------|-------------|
-| [**pair-programmer**](https://github.com/lebobo88/pair-programmer) | Coding harness with 39 sub-agents, 22 teams, taxonomy gates, judges | Watcher ingests run verdicts + artifacts; registrar tracks 59 resources |
+| [**AgentSmith**](https://github.com/lebobo88/AgentSmith) | Meta-governance daemon — enforces 10 immutable invariants across all projects | EightsBridge MCP client; constitution attestation; proposes evolutions but cannot commit (TheEights holds the verdict) |
 | [**Hydra**](https://github.com/lebobo88/Hydra) | LangGraph multi-squad supervisor and dispatcher | Constitution attestation at intake; envelope recording; budget enforcement |
+| [**pair-programmer**](https://github.com/lebobo88/pair-programmer) | Coding harness with 39 sub-agents, 22 teams, taxonomy gates, judges | Watcher ingests run verdicts + artifacts; registrar tracks 59 resources |
 | [**ExecutiveSuite**](https://github.com/lebobo88/ExecutiveSuite) | 20 C-suite agent roles + 4 multi-exec orchestrators | Decision memo ingestion → Agent-BOM graph; 42 governed resources |
+| [**MarketBliss**](https://github.com/lebobo88/MarketBliss) | Marketing organization — 15 specialist agents across 5 Hydra squad packs | Episodic + semantic memory for campaigns; evolution-governed brand-voice and persona resources |
 | [**RLM-Creative**](https://github.com/lebobo88/rlm-creative) | 9-phase creative pipeline (14+ sibling projects) | Event normalization from `events.jsonl`; 1,175 governed resources |
+
+### How AgentSmith + TheEights Work Together
+
+AgentSmith is the ecosystem's "antibody system" — it validates, inspects, and quarantines artifacts across all projects. TheEights is the memory and evolution substrate it depends on:
+
+```mermaid
+flowchart LR
+    S[AgentSmith\nInspector + Sentinel] -->|"constitution.attest"| T[TheEights\nConstitution Engine]
+    S -->|"evolution.propose"| E[TheEights\nEvolution Engine]
+    E -->|evaluate + verdict| E
+    E -->|"commit (if approved)"| R[Resource Store]
+    T -->|receipt_signature| S
+    S -.->|"CANNOT call evolution.commit"| E
+```
+
+- **Smith proposes, TheEights decides.** AgentSmith can detect drift and propose resource changes via `eights.evolution.propose`, but only TheEights' Evolution Engine can issue the commit verdict. This prevents the governance layer from unilaterally mutating the systems it governs.
+- **Constitution attestation** — Smith validates its own invariants against TheEights' hash-chained constitution at startup and before any enforcement action.
+- **Concurrency-safe** — TheEights' audit engine handles the dual-spawn race between AgentSmith's EightsBridge and other MCP clients (Claude Code, pair-programmer) via serialized append.
 
 ---
 
@@ -381,6 +401,4 @@ npm run build    # production build
 
 ## License
 
-This repository is currently **source-available but not open-source licensed**. No LICENSE file is present, which means default copyright applies — you may view the code but not redistribute or use it in derivative works without explicit permission from the author.
-
-An open-source license (likely MIT or Apache-2.0) is planned for a future release.
+[MIT](./LICENSE)
