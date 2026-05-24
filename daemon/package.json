@@ -1,6 +1,6 @@
 {
   "name": "@eights/daemon",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "description": "TheEights — persistent, self-evolving memory + governance fabric (daemon + MCP)",
   "type": "module",

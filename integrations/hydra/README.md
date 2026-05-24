@@ -6,9 +6,9 @@ It is the **first live consumer** of `eights-daemon` and validates the MCP surfa
 
 ## Install (one-time)
 
-```powershell
+```bash
 # Build the daemon (Node 20+ required)
-cd C:\AiAppDeployments\TheEights\daemon
+cd <TheEights-repo>/daemon
 npm install
 npm run build
 ```
@@ -17,9 +17,9 @@ npm run build
 
 Copy or symlink into Hydra's source tree:
 
-```powershell
-copy C:\AiAppDeployments\TheEights\integrations\hydra\eights_memory.py `
-     C:\AiAppDeployments\Hydra\hydra_core\eights_memory.py
+```bash
+cp <TheEights-repo>/integrations/hydra/eights_memory.py \
+   <Hydra-repo>/hydra_core/eights_memory.py
 ```
 
 Then in a LangGraph node:
@@ -67,12 +67,12 @@ async def planner_node(state):
 
 ## Daemon lifecycle
 
-`EightsMemoryService.connect()` spawns the daemon as a subprocess on stdio. For long-lived workflows, keep a single service instance per process. The daemon itself is single-writer; concurrency inside one Hydra process is fine, multiple Hydra processes against the same daemon need queue serialization (Phase 2 will harden this).
+`EightsMemoryService.connect()` spawns the daemon as a subprocess on stdio. For long-lived workflows, keep a single service instance per process. The daemon itself is single-writer; concurrency inside one Hydra process is fine, multiple Hydra processes against the same daemon need queue serialization (governance plane enforces this via budget/ceiling gates).
 
 ## Smoke-testing the wire
 
-```powershell
-cd C:\AiAppDeployments\TheEights\integrations\hydra
+```bash
+cd <TheEights-repo>/integrations/hydra
 python -m smoke
 ```
 

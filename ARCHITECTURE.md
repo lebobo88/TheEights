@@ -2,7 +2,7 @@
 
 > A local-first daemon + MCP server that gives every AI agent, team, and project across the workspace a **shared persistent memory**, a **governance plane**, and a **gated self-evolution loop**. Domain-agnostic by design.
 
-**Status:** Architecture v0.1 (May 2026)
+**Status:** Architecture v0.3.0 (May 2026)
 **Author of record:** decisions locked via /goal — robob
 **Companion docs:** `Architecting Enterprise Multi-Agent Systems in 2026 — Persistent Memory, Orchestration Layers, and Self-Evolving Capabilities.md` (reference research)
 
@@ -368,86 +368,118 @@ Just register a new `project_id` and write an adapter that translates that syste
 ```
 TheEights/
   ARCHITECTURE.md           # this file
-  ROADMAP.md                # phased plan (Phase 0..4 from the reference doc)
+  ROADMAP.md                # phased plan (Phase 0..6, all complete)
   AGENTS.md                 # behavioral contract for AI agents working in this repo
   CLAUDE.md                 # Claude Code import shim → @AGENTS.md
-  README.md                 # quickstart
+  README.md                 # quickstart + ecosystem overview
   adrs/
     0001-sqlite-vec-over-pgvector.md
-    0002-kuzu-over-neo4j.md
+    0002-ladybug-over-kuzu.md
     0003-node-daemon-mcp-first.md
     0004-autogenesis-resource-model.md
     0005-ssgm-gate-set.md
     0006-risk-class-evolution-policy.md
+    0007-source-anchored-resources-and-writeback.md
+    0008-eval-adapter-contract-and-llm-judge.md
   daemon/                   # Node 20 LTS
     package.json
     src/
-      index.ts              # entry: spawns MCP servers + supervisor
+      index.ts              # entry: wires engines + MCP server
+      config.ts             # configuration loader
+      logger.ts             # pino JSON logger
+      embeddings.ts         # OllamaEmbedder (nomic-embed-text, 768-dim)
+      audit-repair.ts       # forensic recovery tool
       mcp/
+        server.ts           # MCP server startup + stdio transport
         memory.ts           # eights.memory.*
-        governance.ts
-        evolution.ts
-        audit.ts
-        identity.ts
-        observability.ts
+        governance.ts       # eights.governance.*
+        evolution.ts        # eights.evolution.*
+        audit.ts            # eights.audit.*
+        identity.ts         # eights.identity.*
+        constitution.ts     # eights.constitution.*
+        hydra.ts            # eights.hydra.*
+        squad.ts            # eights.squad.*
+        prompt.ts           # eights.prompt.*
+        cells.ts            # eights.cells.*
+        adapters.ts         # eights.adapters.*
+        zod-to-json.ts      # schema export utility
       engines/
-        memory.ts
-        policy.ts
-        evolution.ts
-        audit.ts
+        memory.ts           # hybrid memory orchestrator
+        evolution.ts        # Autogenesis RSPL/SEPL
+        policy.ts           # SSGM/LASM policy evaluator
+        audit.ts            # append-only event log + tamper detection
+        governance-state.ts # budgets, ceilings, breaker, HITL queue
+        identity.ts         # tenant/actor/project registration
+        constitution.ts     # versioning + attestation binding
+        redaction.ts        # scope-aware redaction
+        hydra.ts            # envelope recording + cross-squad queries
+        bom.ts              # CycloneDX ML-BOM v1.7 export
+        miner.ts            # nightly pattern miner
+        git-writer.ts       # signed resource commits
+        pp-watcher.ts       # pair-programmer event watcher
+        execsuite-watcher.ts
+        rlm-watcher.ts
+        writeback.ts        # WriteRouter dispatcher
+        registrars/         # 4 bulk resource scanners (pp, hydra, execsuite, rlm)
+        writers/            # 4 WriteBridges (sandbox-enforced writeback)
+        eval/               # 4 judge adapters (llm-judge, yaml-structural, rubric-backtest, noop)
       stores/
-        sqlite.ts
-        vec.ts              # sqlite-vec wrapper
-        graph.ts            # LadybugDB (Kuzu-compatible) wrapper
+        sqlite.ts           # primary episodic + audit + KV (WAL mode)
+        vec.ts              # sqlite-vec wrapper (768-dim embeddings)
+        graph.ts            # LadybugDB / Kuzu property graph
       cognitive/
-        memory-steward.ts
-        cost-analyst.ts
+        memory-steward.ts   # periodic consolidation + decay
+        cost-analyst.ts     # token/latency analysis
+        iolaus.ts           # Hydra episode synthesis + calibration
+        cell-classifier.ts  # 8-cell keyword classifier + Ollama fallback
       adapters/
         pp-bridge.ts
         hydra-bridge.ts
         execsuite-bridge.ts
         rlm-bridge.ts
-      hooks/
-        dispatcher.ts
+      observability/
+        otel-sink.ts        # OTEL exporter (localhost-only, opt-in)
       schemas/
-        envelope.ts
-        memory.ts
-        resource.ts
-        proposal.ts
-        agent-bom.ts
-    test/
+        envelope.ts         # identity envelope (tenant/actor/project/scope)
+        memory.ts           # memory types (working, episodic, semantic, procedural, meta)
+        resource.ts         # versioned resources
+        proposal.ts         # evolution proposals
+        hydra-envelope.ts   # Hydra message subtypes
+        memory-handle.ts    # typed memory references (ep://, sem://, proc://, meta://)
+    test/                   # 12 test files, 43 vitest cases
   cli/                      # `eights` CLI (thin shim over MCP)
     src/
-      commands/
-        init.ts
-        status.ts
-        memory.ts           # search/add from terminal
-        evolution.ts        # list/approve/reject proposals
-        review.ts           # interactive HITL queue
-        replay.ts
-  schemas/                  # JSON Schema exports (consumed by adapters)
-  examples/
-  scripts/
+      index.ts
+      mcp-client.ts
+  integrations/
+    hydra/                  # Python adapter for LangGraph nodes
+      eights_memory.py
 ```
 
 ---
 
-## 11. Phased delivery (matches reference doc §10.2)
+## 11. Phased delivery (all complete as of v0.3.0)
 
-- **Phase 0 — Foundations (this PR through ~2 weeks)**
-  Repo, ARCHITECTURE, ADRs, daemon skeleton, SQLite/sqlite-vec/Kuzu wiring, `eights.memory.{add,search,get}`, `eights.audit.trace`, `eights.identity.*`. CLI: `eights init`, `eights status`, `eights memory search`.
+- **Phase 0 — Foundations (DONE)**
+  Repo, ARCHITECTURE, ADRs 0001–0006, daemon skeleton, SQLite/sqlite-vec/Kuzu wiring, `eights.memory.{add,search,get,link}`, `eights.audit.trace`, `eights.identity.*`. CLI: `eights init`, `eights status`, `eights memory search`.
 
-- **Phase 1 — Single adapter live (~weeks 3-4)**
+- **Phase 1 — pair-programmer bridge (DONE)**
   pp-bridge wired to pair-programmer post-finalize hook. Cross-run recall demonstrably influences next run's prompts. Audit graph populated.
 
-- **Phase 2 — Governance plane**
+- **Phase 2 — Governance plane (DONE)**
   Policy Engine + SSGM gates + LASM access checks. Redaction at MCP boundary. `eights.governance.*` complete.
 
-- **Phase 3 — Evolution engine + HITL queue**
-  Autogenesis RSPL/SEPL. Risk-class routing. `eights:review` CLI command. First auto-commit on a low-risk resource (e.g. a docs prompt).
+- **Phase 3 — Evolution engine + HITL queue (DONE)**
+  Autogenesis RSPL/SEPL. Risk-class routing. `eights review` CLI command. First auto-commit on a low-risk resource achieved.
 
-- **Phase 4 — Remaining adapters & cross-project mining**
-  hydra-bridge, execsuite-bridge, rlm-bridge. Nightly pattern miner. Cost analyst. Dashboard.
+- **Phase 4 — Cross-project adapters + mining (DONE)**
+  hydra-bridge, execsuite-bridge, rlm-bridge. Nightly pattern miner. Cost analyst. CycloneDX ML-BOM v1.7 export.
+
+- **Phase 5 — Self-evolution closed-loop (DONE)**
+  Side-branch writeback (`theeights/auto`) per ADR-0007. LLM-judge / YAML-structural / rubric-backtest / noop eval registry. 1,284 evolvable resources registered across 4 consumers.
+
+- **Phase 6 — Hydra manifesto alignment (DONE)**
+  11 implementation tracks: constitution attestation, memory handle scheme, HydraEnvelope native ingest, Eight Cells semantic axis, governance plane (budget/ceiling/breaker/HITL), squad-scoped redaction, squads as evolvable resources, OTEL bridge, procedural spine (prompt registry), cognitive services (Memory Steward/Cost Analyst/Iolaus), tests + docs. 43/43 vitest passing.
 
 ---
 
@@ -468,10 +500,10 @@ These cannot be modified by the Evolution Engine, ever:
 
 ---
 
-## 13. Open questions (to be resolved during Phase 0–1)
+## 13. Resolved questions
 
-- **Embedding model.** Local (Ollama nomic-embed-text? bge-small?) vs. cloud (OpenAI text-embedding-3-small). Default: local for v1, configurable.
-- **Kuzu schema migrations.** Kuzu's schema evolution story on Windows.
-- **Process lifecycle.** Auto-start on first MCP connection vs. explicit `eights start`. Lean: explicit, matches pp daemon.
-- **Multi-user readiness signal.** When to flip tenancy on (deferred to v2).
-- **The name.** "TheEights" — keep or rebrand before public surface? (Cosmetic.)
+- **Embedding model.** Resolved: Ollama `nomic-embed-text` (768-dim), local-only for v1. Configurable via `embeddings.ts`.
+- **Kuzu schema migrations.** Resolved: using LadybugDB as primary with Kuzu 0.11.x as fallback driver. Schema managed via `graph.ts` wrapper.
+- **Process lifecycle.** Resolved: explicit start via MCP stdio transport. Matches pair-programmer daemon pattern.
+- **Multi-user readiness signal.** Resolved: deferred to v2. Architecture supports multi-tenancy via Envelope scoping; not activated in v1.
+- **The name.** Resolved: keeping "TheEights."

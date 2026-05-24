@@ -1,6 +1,6 @@
 {
   "name": "@eights/cli",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "description": "TheEights CLI — thin shim over the eights-daemon MCP surface",
   "type": "module",

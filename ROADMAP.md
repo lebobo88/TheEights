@@ -2,13 +2,11 @@
 
 Phased delivery, aligned with §10.2 of the reference architecture doc.
 
-## Status snapshot (2026-05-19)
+## Status snapshot (2026-05-24)
 
-**Phase 5 complete — self-evolution loop extends into Hydra, ExecutiveSuite, pair-programmer, and the entire RLM family.** `eights-daemon` v0.3.0 boots with **35+ MCP tools**, four WriteBridges with sandbox-enforced writeback to `theeights/auto` git side-branches, four bulk registrars, and four EvalAdapters (LLM-judge for prose, YAML-structural for teams/workflows, rubric-backtest for rubrics, NoopEval catch-all). 32/32 vitest passing across 8 files.
+**Phase 6 complete — all phases shipped.** `eights-daemon` v0.3.0 boots with **65 MCP tools** across 12 namespaces, four WriteBridges with sandbox-enforced writeback to `theeights/auto` git side-branches, four bulk registrars, four EvalAdapters (LLM-judge for prose, YAML-structural for teams/workflows, rubric-backtest for rubrics, NoopEval catch-all), and full Hydra manifesto alignment (constitution attestation, envelope ingest, budget/ceiling/breaker governance, Eight Cells, squad-scoped redaction). 43/43 vitest passing across 12 files.
 
 Live deployment numbers: **1,284 evolvable resources** registered (pp: 59, hydra: 8 squads, execsuite: 42, rlm family: 1,175). Critical-frozen roster: 8 Hydra squads (carry tool-privilege escalation), 3 ExecutiveSuite governance skills (ai-governance, executive-protocol, financial-frameworks), 5 eval judge rubrics, 2 eights policies, plus RLM safety hooks per project. CycloneDX ML-BOM v1.7 emits 1,288 components. Hash-chained audit log clean.
-
-## Phase 0 — Foundations (DONE)
 
 ## Phase 0 — Foundations (DONE)
 
