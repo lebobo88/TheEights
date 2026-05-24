@@ -185,8 +185,9 @@ async function main(): Promise<void> {
   const embedder = new OllamaEmbedder();
   const completer = new OllamaCompleter();
   const embedAvail = await embedder.available();
+  const llmEnabled = process.env.EIGHTS_LLM_COMPLETIONS === "1";
   const llmAvail = await completer.available();
-  log.info({ embedAvail, llmAvail }, "local LLM stack probed");
+  log.info({ embedAvail, llmEnabled, llmAvail }, "local LLM stack probed");
 
   const memory = new MemoryEngine(sql, vec, graph, audit, embedder, policy);
   const identity = new IdentityEngine(sql);

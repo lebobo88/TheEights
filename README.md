@@ -221,7 +221,15 @@ flowchart LR
 ### Prerequisites
 
 - **Node.js 20+** and npm
-- **Ollama** (optional) — provides vector embeddings via `nomic-embed-text`. Without it, the daemon starts normally but `eights.memory.search` falls back to episodic-only keyword matching (no semantic similarity). Install from [ollama.com](https://ollama.com) and run `ollama pull nomic-embed-text` to enable full hybrid search.
+- **Ollama** (optional) — provides two local AI capabilities:
+  - **Embeddings** (`nomic-embed-text`, 768-dim) — always active when Ollama is available. Enables semantic similarity in `eights.memory.search`. Without it, search falls back to episodic keyword matching.
+  - **LLM completions** — opt-in via `EIGHTS_LLM_COMPLETIONS=1`. Powers eval scoring (LLM judge), cell classification fallback, and pattern miner proposal drafting. **Disabled by default** to avoid unexpected GPU/CPU load.
+  
+  Install from [ollama.com](https://ollama.com) and pull models:
+  ```bash
+  ollama pull nomic-embed-text          # embeddings (recommended)
+  ollama pull gpt-oss:20b               # completions (optional, requires opt-in)
+  ```
 
 ### 1. Clone and Build
 
@@ -278,7 +286,7 @@ The daemon creates its state directory on first run:
 node ./cli/dist/index.js status
 ```
 
-If Ollama is not running, you'll see `embeddings: unavailable (degraded to episodic-only)` — this is expected and non-fatal.
+If Ollama is not running, you'll see `embedAvail: false` — this is expected and non-fatal. If `EIGHTS_LLM_COMPLETIONS` is unset, you'll see `llmEnabled: false` (completions are opt-in).
 
 ---
 
@@ -392,9 +400,12 @@ npm run build    # production build
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `EIGHTS_HOME` | `~/.eights/` (`%USERPROFILE%\.eights\` on Windows) | Runtime state directory |
-| `EIGHTS_OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint for embeddings |
+| `EIGHTS_OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint for embeddings and completions |
 | `EIGHTS_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model name |
 | `EIGHTS_EMBEDDING_DIM` | `768` | Embedding vector dimensions |
+| `EIGHTS_LLM_COMPLETIONS` | `0` | Enable local LLM completions for eval, classification, and mining (`1` = enabled) |
+| `EIGHTS_LLM_MODEL` | `gpt-oss:20b` | Primary LLM model (requires `EIGHTS_LLM_COMPLETIONS=1`) |
+| `EIGHTS_LLM_FALLBACK` | `qwen3:4b` | Fallback LLM model if primary unavailable |
 | `EIGHTS_OTEL_ENABLED` | `0` | Enable OpenTelemetry exporter (localhost-only; refuses non-loopback) |
 
 ---

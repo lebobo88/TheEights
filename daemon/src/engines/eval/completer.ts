@@ -21,6 +21,7 @@ export class OllamaCompleter implements Completer {
   lastError: string | null = null;
   private cachedAvailable: boolean | null = null;
   private models: string[];
+  private readonly enabled: boolean;
 
   constructor(
     private readonly url: string = process.env.EIGHTS_OLLAMA_URL ?? "http://localhost:11434",
@@ -28,9 +29,11 @@ export class OllamaCompleter implements Completer {
     fallback: string = process.env.EIGHTS_LLM_FALLBACK ?? "qwen3:4b",
   ) {
     this.models = [primary, fallback];
+    this.enabled = process.env.EIGHTS_LLM_COMPLETIONS === "1";
   }
 
   async available(): Promise<boolean> {
+    if (!this.enabled) return false;
     if (this.cachedAvailable !== null) return this.cachedAvailable;
     try {
       const res = await fetch(`${this.url}/api/tags`);
