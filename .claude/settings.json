@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/AiAppDeployments/TheEights/.claude/hooks/eights-session-status.ps1"
+          }
+        ]
+      }
+    ]
+  }
+}
