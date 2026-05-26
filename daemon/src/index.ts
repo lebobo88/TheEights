@@ -33,8 +33,7 @@ import { CostAnalystJob } from "./cognitive/cost-analyst.js";
 import { IolausJob } from "./cognitive/iolaus.js";
 import { PromptRegistrar } from "./engines/registrars/prompts.js";
 import { OtelSink } from "./observability/otel-sink.js";
-import { OllamaEmbedder } from "./embeddings.js";
-import { OllamaCompleter } from "./engines/eval/completer.js";
+import { loadProviderConfig, createEmbedder, createCompleter } from "./providers/index.js";
 import { PpBridge } from "./adapters/pp-bridge.js";
 import { ExecSuiteBridge } from "./adapters/execsuite-bridge.js";
 import { RlmBridge } from "./adapters/rlm-bridge.js";
@@ -182,12 +181,23 @@ async function main(): Promise<void> {
   }
 
   const policy = new PolicyEngine(sql);
-  const embedder = new OllamaEmbedder();
-  const completer = new OllamaCompleter();
+  const providerCfg = loadProviderConfig();
+  const embedder = await createEmbedder(providerCfg);
+  const completer = await createCompleter(providerCfg);
+  if (embedder.dim() !== cfg.embeddingDim) {
+    throw new Error(
+      `Embedder reports dim=${embedder.dim()} but EIGHTS_EMBEDDING_DIM=${cfg.embeddingDim}. ` +
+      `Set EIGHTS_EMBEDDING_DIM=${embedder.dim()} or choose a model that matches.`,
+    );
+  }
   const embedAvail = await embedder.available();
-  const llmEnabled = process.env.EIGHTS_LLM_COMPLETIONS === "1";
+  const llmEnabled = providerCfg.llmEnabled;
   const llmAvail = await completer.available();
-  log.info({ embedAvail, llmEnabled, llmAvail }, "local LLM stack probed");
+  log.info({
+    embedProvider: providerCfg.embedProvider,
+    llmProvider: providerCfg.llmProvider,
+    embedAvail, llmEnabled, llmAvail,
+  }, "LLM stack probed");
 
   const memory = new MemoryEngine(sql, vec, graph, audit, embedder, policy);
   const identity = new IdentityEngine(sql);

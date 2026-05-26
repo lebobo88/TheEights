@@ -22,7 +22,9 @@ Read `ARCHITECTURE.md` first. Read `ROADMAP.md` for phase scope.
 
 4. **No silent mutation.** All resource changes go through the Evolution Engine, even seed data.
 
-5. **No telemetry to anywhere other than the local event log.** v1 is local-first single-user. No outbound HTTP from the daemon. The Phase-6 OTEL sink is opt-in AND hard-gated to localhost endpoints; it refuses any non-loopback hostname at startup.
+5. **No telemetry to anywhere other than the local event log.** v1 is local-first single-user. No outbound HTTP from the daemon except for user-configured LLM/embedding provider endpoints (see below). The Phase-6 OTEL sink is opt-in AND hard-gated to localhost endpoints; it refuses any non-loopback hostname at startup.
+
+   **Cloud provider exception:** User-configured LLM/embedding provider endpoints (OpenAI, DeepSeek, AuthHub) are permitted when `EIGHTS_ALLOW_CLOUD_PROVIDERS=1` is explicitly set. This exception applies only to the provider transport layer (`daemon/src/providers/`), not to telemetry or observability sinks. The `EIGHTS_LLM_COMPLETIONS=1` toggle must also be set for completions to be active.
 
 6. **Constitution attestation is mandatory at workflow intake.** Every supervisor MUST call `eights.constitution.attest` before its planning phase and bind the returned `receipt_signature` to its run state. Refusal aborts the workflow.
 
@@ -43,6 +45,7 @@ Read `ARCHITECTURE.md` first. Read `ROADMAP.md` for phase scope.
 - MCP handlers (`daemon/src/mcp/`) call engines. They do not call stores directly.
 - Engines (`daemon/src/engines/`) call stores. They do not call MCP handlers.
 - Stores (`daemon/src/stores/`) are pure CRUD + query. No business logic.
+- Providers (`daemon/src/providers/`) implement the `Embedder` and `Completer` interfaces. They import only interfaces from the root `src/` level (`embeddings.ts`, `completer.ts`). They do not import engines, stores, or MCP handlers. The `local/` subdirectory is gitignored for private providers (AuthHub SDK).
 - Cognitive services (`daemon/src/cognitive/`) call engines + LLMs. They do not call stores.
 - Scheduled jobs (`daemon/src/cognitive/*-job.ts`) follow a `start() / stop() / runOnce()` triad and never block daemon shutdown. Memory Steward, Cost Analyst, and Iolaus live here.
 - Observability sinks (`daemon/src/observability/`) attach to existing engines (audit, metrics) by composition, not by mutation of their internal state. The OTEL sink is the canonical example: it wraps `AuditEngine.record` rather than reaching into the queue.

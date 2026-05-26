@@ -27,7 +27,7 @@ The name evokes (a) the 8 reference-doc layers (LASM), (b) the 8 chambers of a t
 
 ## 2. Design principles (non-negotiable)
 
-1. **Local-first, single binary.** Daemon process on localhost, single user, no external services in v1. Cloud profile later, behind the same MCP surface.
+1. **Local-first, single binary.** Daemon process on localhost, single user, no external services in v1 except opt-in cloud LLM/embedding providers gated behind `EIGHTS_ALLOW_CLOUD_PROVIDERS=1`. Cloud profile later, behind the same MCP surface.
 2. **Substrate, not framework.** TheEights does not own orchestration. It owns memory, audit, and evolution gating. Consumers stay in their own paradigms (LangGraph, Claude Code agents, MCP).
 3. **Domain-agnostic.** No baked-in industry verticals. A new domain (legal, healthcare, game-dev, finance) is a namespace + scope, not a code change.
 4. **MCP-first surface.** Everything exposed to agents is an MCP tool/resource. CLI is a thin shim over MCP.

@@ -95,7 +95,7 @@ Live deployment numbers: **1,284 evolvable resources** registered (pp: 59, hydra
 
 ## Out of scope for v1
 
-- Cloud / multi-tenant deployment (architecture supports it; not built)
+- Cloud / multi-tenant deployment (architecture supports it; not built). Note: cloud LLM/embedding providers (OpenAI, DeepSeek, AuthHub) are opt-in in v1 behind `EIGHTS_ALLOW_CLOUD_PROVIDERS=1` — this is provider routing, not multi-tenant deployment.
 - Pgvector driver (only sqlite-vec in v1)
 - Graph DB swap to Neo4j / Memgraph (only LadybugDB / Kuzu)
 - Web UI (CLI + Claude Code skills only)

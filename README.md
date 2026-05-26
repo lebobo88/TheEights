@@ -155,7 +155,7 @@ These rules are **immutable** — the Evolution Engine cannot modify them:
 7. **Eval rubric immutability** — judge rubrics cannot be mutated by the system they evaluate
 8. **Constitution attestation at intake** — every workflow must bind to a constitution hash
 9. **Squad lifecycle through Evolution Engine** — squads are resources, not raw YAML
-10. **OTEL exporter is loopback-only** — no outbound HTTP from the daemon
+10. **OTEL exporter is loopback-only** — no outbound telemetry HTTP from the daemon (cloud LLM providers are a separate opt-in gate)
 
 See [ARCHITECTURE.md §12](./ARCHITECTURE.md) for full details.
 
@@ -221,15 +221,17 @@ flowchart LR
 ### Prerequisites
 
 - **Node.js 20+** and npm
-- **Ollama** (optional) — provides two local AI capabilities:
-  - **Embeddings** (`nomic-embed-text`, 768-dim) — always active when Ollama is available. Enables semantic similarity in `eights.memory.search`. Without it, search falls back to episodic keyword matching.
-  - **LLM completions** — opt-in via `EIGHTS_LLM_COMPLETIONS=1`. Powers eval scoring (LLM judge), cell classification fallback, and pattern miner proposal drafting. **Disabled by default** to avoid unexpected GPU/CPU load.
+- **An embedding/LLM provider** (any one of):
+  - **Ollama** (default, local) — install from [ollama.com](https://ollama.com) and pull models:
+    ```bash
+    ollama pull nomic-embed-text          # embeddings (recommended)
+    ollama pull gpt-oss:20b               # completions (optional, requires opt-in)
+    ```
+  - **OpenAI API** — set `EIGHTS_PROVIDER=openai` + `EIGHTS_OPENAI_API_KEY` + `EIGHTS_ALLOW_CLOUD_PROVIDERS=1`
+  - **DeepSeek API** (completions only) — set `EIGHTS_LLM_PROVIDER=deepseek` + `EIGHTS_DEEPSEEK_API_KEY` + `EIGHTS_ALLOW_CLOUD_PROVIDERS=1`
+  - **AuthHub SDK** (local-only, never committed) — see [Provider Configuration](#provider-configuration)
   
-  Install from [ollama.com](https://ollama.com) and pull models:
-  ```bash
-  ollama pull nomic-embed-text          # embeddings (recommended)
-  ollama pull gpt-oss:20b               # completions (optional, requires opt-in)
-  ```
+  All providers are optional. Without any, search falls back to episodic keyword matching and completions gracefully degrade.
 
 ### 1. Clone and Build
 
@@ -319,12 +321,15 @@ TheEights/
 │   ├── engines/         18 engines (core + watchers + registrars + writers + eval)
 │   ├── stores/          SQLite, sqlite-vec, Kuzu/LadybugDB
 │   ├── cognitive/       Memory Steward, Cost Analyst, Iolaus, Cell Classifier
+│   ├── providers/       LLM/embedding provider factory (Ollama, OpenAI, DeepSeek, AuthHub)
+│   │   └── local/       Gitignored — AuthHub SDK implementations (never committed)
 │   ├── adapters/        pp-bridge, hydra-bridge, execsuite-bridge, rlm-bridge
 │   ├── schemas/         7 domain models (Zod + JSON Schema export)
 │   └── observability/   OTEL sink (localhost-only, opt-in)
 ├── cli/                 Thin CLI shim over MCP
 ├── integrations/hydra/  Python adapter for LangGraph nodes
 ├── adrs/                8 Architecture Decision Records
+├── .env.example         Annotated environment variable template
 ├── ARCHITECTURE.md      Reference architecture (read this first)
 ├── ROADMAP.md           Phased delivery plan
 └── AGENTS.md            Behavioral contract for AI agents
@@ -348,7 +353,7 @@ TheEights/
 
 See [ROADMAP.md](./ROADMAP.md) for exit criteria per phase.
 
-**Out of scope for v1:** cloud/multi-tenant, pgvector, Neo4j/Memgraph, Web UI.
+**Out of scope for v1:** cloud/multi-tenant deployment, pgvector, Neo4j/Memgraph, Web UI. (Cloud LLM providers are opt-in — see [Provider Configuration](#provider-configuration).)
 
 ---
 
@@ -369,7 +374,7 @@ See [ROADMAP.md](./ROADMAP.md) for exit criteria per phase.
 
 ## Design Principles
 
-1. **Local-first, single binary.** Localhost daemon, single user, no external services. Cloud profile later behind the same MCP surface.
+1. **Local-first, single binary.** Localhost daemon, single user. Cloud LLM/embedding providers opt-in via `EIGHTS_ALLOW_CLOUD_PROVIDERS=1`. Full cloud profile later behind the same MCP surface.
 2. **Substrate, not framework.** Owns memory, audit, and evolution gating — not orchestration. Consumers keep their paradigms.
 3. **Domain-agnostic.** A new domain is a namespace + scope, not a code change.
 4. **MCP-first surface.** Everything exposed to agents is an MCP tool. CLI is a thin shim.
@@ -395,18 +400,146 @@ npm run build    # production build
 
 ---
 
+## Provider Configuration
+
+TheEights supports four LLM/embedding providers. Ollama (local) is the default; cloud providers require explicit opt-in.
+
+| Provider | Embeddings | Completions | Notes |
+|----------|:----------:|:-----------:|-------|
+| **Ollama** (default) | yes | yes | Local, no API key needed. Requires [Ollama](https://ollama.com) running. |
+| **OpenAI** | yes | yes | `text-embedding-3-small` / `gpt-4o-mini` defaults. Set `EIGHTS_OPENAI_API_KEY`. |
+| **DeepSeek** | no | yes | Completions only — no embeddings API. Set `EIGHTS_DEEPSEEK_API_KEY`. |
+| **AuthHub** | yes | yes | Local-only (gitignored). Multi-provider routing via `@authhub/sdk`. |
+
+### Provider selection
+
+```bash
+# Set both embed + LLM to the same provider:
+EIGHTS_PROVIDER=openai
+
+# Or split them (e.g., OpenAI embeddings + DeepSeek completions):
+EIGHTS_EMBED_PROVIDER=openai
+EIGHTS_LLM_PROVIDER=deepseek
+```
+
+`EIGHTS_EMBED_PROVIDER` and `EIGHTS_LLM_PROVIDER` override `EIGHTS_PROVIDER` when set.
+
+### Cloud provider opt-in
+
+All non-Ollama providers require **two gates**:
+
+1. `EIGHTS_ALLOW_CLOUD_PROVIDERS=1` — acknowledges outbound API traffic
+2. `EIGHTS_LLM_COMPLETIONS=1` — enables completions (for any provider, not just Ollama)
+
+Without `EIGHTS_ALLOW_CLOUD_PROVIDERS=1`, cloud providers throw at startup. Without `EIGHTS_LLM_COMPLETIONS=1`, completions return null (eval, cell classifier, and miner gracefully degrade).
+
+### Dimension mapping
+
+Embedding dimensions are fixed per provider/model. Switching providers may require updating `EIGHTS_EMBEDDING_DIM`:
+
+| Provider | Model | Default Dim |
+|----------|-------|:-----------:|
+| Ollama | `nomic-embed-text` | 768 |
+| OpenAI | `text-embedding-3-small` | 1536 |
+| OpenAI | `text-embedding-3-large` | 3072 |
+| AuthHub | depends on routed model | varies |
+
+OpenAI's `text-embedding-3-*` supports dimension truncation — set `EIGHTS_OPENAI_EMBED_DIM=768` to match an existing Ollama-populated vector store.
+
+**If dimensions change:** delete `~/.eights/state.db` and let it rebuild (existing vectors are incompatible across dimensions).
+
+### DeepSeek
+
+DeepSeek provides completions only (no embeddings API). Setting `EIGHTS_EMBED_PROVIDER=deepseek` falls back to `NullEmbedder` (episodic search only).
+
+### AuthHub (local-only)
+
+AuthHub integration uses the `@authhub/sdk` package and is **never committed** to the repo. The implementation files live in `daemon/src/providers/local/` (gitignored).
+
+**Setup:**
+1. Install the SDK locally: `cd daemon && npm install @authhub/sdk`
+2. The `local/authhub-embedder.ts` and `local/authhub-completer.ts` files are already present locally (gitignored)
+3. Set `EIGHTS_AUTHHUB_BASE_URL`, `EIGHTS_AUTHHUB_API_KEY`, and `EIGHTS_ALLOW_CLOUD_PROVIDERS=1`
+4. Optionally set `EIGHTS_AUTHHUB_ROUTE_ALIAS` for AuthHub's intelligent provider routing
+
+If the local files or SDK are absent, AuthHub gracefully degrades to `NullEmbedder` / `NullCompleter`.
+
+---
+
 ## Configuration
+
+See [`.env.example`](./.env.example) for a complete annotated template.
+
+### Core
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `EIGHTS_HOME` | `~/.eights/` (`%USERPROFILE%\.eights\` on Windows) | Runtime state directory |
-| `EIGHTS_OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint for embeddings and completions |
+| `EIGHTS_LOG_LEVEL` | `info` | Pino log level |
+
+### Provider Selection
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `EIGHTS_PROVIDER` | `ollama` | Sets both embed + LLM provider. Values: `ollama`, `openai`, `deepseek`, `authhub` |
+| `EIGHTS_EMBED_PROVIDER` | ← `EIGHTS_PROVIDER` | Override embed provider independently |
+| `EIGHTS_LLM_PROVIDER` | ← `EIGHTS_PROVIDER` | Override LLM provider independently |
+| `EIGHTS_ALLOW_CLOUD_PROVIDERS` | `0` | Must be `1` for any non-Ollama provider |
+| `EIGHTS_LLM_COMPLETIONS` | `0` | Must be `1` to enable completions for any provider |
+
+### Ollama (local, default)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `EIGHTS_OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint |
 | `EIGHTS_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model name |
-| `EIGHTS_EMBEDDING_DIM` | `768` | Embedding vector dimensions |
-| `EIGHTS_LLM_COMPLETIONS` | `0` | Enable local LLM completions for eval, classification, and mining (`1` = enabled) |
-| `EIGHTS_LLM_MODEL` | `gpt-oss:20b` | Primary LLM model (requires `EIGHTS_LLM_COMPLETIONS=1`) |
+| `EIGHTS_EMBEDDING_DIM` | `768` | Embedding vector dimensions (must match model) |
+| `EIGHTS_LLM_MODEL` | `gpt-oss:20b` | Primary LLM model |
 | `EIGHTS_LLM_FALLBACK` | `qwen3:4b` | Fallback LLM model if primary unavailable |
+
+### OpenAI
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `EIGHTS_OPENAI_API_KEY` | — | Required when using OpenAI |
+| `EIGHTS_OPENAI_BASE_URL` | `https://api.openai.com` | API base URL (bare origin, no `/v1`) |
+| `EIGHTS_OPENAI_EMBED_MODEL` | `text-embedding-3-small` | Embedding model |
+| `EIGHTS_OPENAI_EMBED_DIM` | `1536` | Embedding dimensions (supports truncation) |
+| `EIGHTS_OPENAI_LLM_MODEL` | `gpt-4o-mini` | Completion model |
+
+### DeepSeek
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `EIGHTS_DEEPSEEK_API_KEY` | — | Required when using DeepSeek |
+| `EIGHTS_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API base URL |
+| `EIGHTS_DEEPSEEK_LLM_MODEL` | `deepseek-v4-flash` | Completion model (completions only, no embeddings) |
+
+### AuthHub (local-only)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `EIGHTS_AUTHHUB_BASE_URL` | — | Required when using AuthHub |
+| `EIGHTS_AUTHHUB_API_KEY` | — | Required when using AuthHub |
+| `EIGHTS_AUTHHUB_EMBED_MODEL` | `text-embedding-3-small` | Embedding model (routed through AuthHub) |
+| `EIGHTS_AUTHHUB_EMBED_DIM` | `1536` | Embedding dimensions |
+| `EIGHTS_AUTHHUB_LLM_MODEL` | `gpt-4o-mini` | Completion model (routed through AuthHub) |
+| `EIGHTS_AUTHHUB_ROUTE_ALIAS` | — | Optional: AuthHub pool routing alias |
+
+### Observability
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
 | `EIGHTS_OTEL_ENABLED` | `0` | Enable OpenTelemetry exporter (localhost-only; refuses non-loopback) |
+| `EIGHTS_OTEL_ENDPOINT` | `http://localhost:4318/v1/traces` | OTEL endpoint (must be loopback) |
+
+### Development
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `EIGHTS_GRAPH_DRIVER` | `ladybug` | Graph driver: `ladybug`, `kuzu`, or `stub` |
+| `EIGHTS_DISABLE_WATCHERS` | `0` | Disable scheduled jobs (`1` = disabled) |
+| `EIGHTS_SKIP_AUDIT_CHECK` | `0` | Boot despite broken audit chain (`1` = skip) |
 
 ---
 

@@ -11,11 +11,10 @@
  *   EIGHTS_LLM_FALLBACK (default: qwen3:4b)
  */
 
-export interface Completer {
-  complete(system: string, user: string, opts?: { maxTokens?: number; temperature?: number }): Promise<string | null>;
-  available(): Promise<boolean>;
-  lastError: string | null;
-}
+export type { Completer } from "../../completer.js";
+export { NullCompleter } from "../../completer.js";
+
+import type { Completer } from "../../completer.js";
 
 export class OllamaCompleter implements Completer {
   lastError: string | null = null;

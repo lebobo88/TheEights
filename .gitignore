@@ -11,3 +11,6 @@ dist/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Local-only providers (AuthHub SDK etc.) — never committed
+daemon/src/providers/local/
