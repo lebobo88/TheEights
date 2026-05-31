@@ -39,6 +39,13 @@ export function computeRowHash(
 export class AuditEngine {
   private readonly selectLatestHash;
   private readonly insertEvent;
+  private readonly selectCheckpoint;
+  private readonly advanceCheckpoint;
+
+  /** Yield to the event loop every N rows during a full scan so the MCP
+   *  transport stays responsive while a large chain is verified in the
+   *  background (Part A — boot is decoupled from verification). */
+  private static readonly VERIFY_YIELD_EVERY = 5000;
 
   constructor(
     private readonly store: SqliteStore,
@@ -51,6 +58,19 @@ export class AuditEngine {
     this.insertEvent = this.store.db.prepare(
       `INSERT INTO events(ts, kind, envelope_json, payload_json, prev_hash, hash)
        VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    this.selectCheckpoint = this.store.db.prepare(
+      "SELECT event_id, hash FROM audit_checkpoint WHERE id = 1",
+    );
+    // Monotonic advance — concurrent daemons can only push the mark forward.
+    this.advanceCheckpoint = this.store.db.prepare(
+      `INSERT INTO audit_checkpoint(id, event_id, hash, verified_at)
+       VALUES (1, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         event_id = excluded.event_id,
+         hash = excluded.hash,
+         verified_at = excluded.verified_at
+       WHERE excluded.event_id > audit_checkpoint.event_id`,
     );
   }
 
@@ -84,18 +104,59 @@ export class AuditEngine {
     return { event_id, hash };
   }
 
-  /** Verifies the hash chain end-to-end. Run at startup. */
-  verifyChain(): { ok: true } | { ok: false; broken_at: number } {
-    const rows = this.store.db
-      .prepare("SELECT event_id, ts, kind, envelope_json, payload_json, prev_hash, hash FROM events ORDER BY event_id")
-      .all() as Array<{ event_id: number; ts: string; kind: string; envelope_json: string; payload_json: string; prev_hash: string; hash: string }>;
-
+  /**
+   * Verifies the hash chain. Async + streaming so a large ledger can be
+   * verified off the boot critical path without blocking the event loop.
+   *
+   * Incremental (default): seeds from the persisted `audit_checkpoint` and
+   * re-hashes only rows after it, then advances the mark. The chain prefix up
+   * to the checkpoint was verified on a prior pass, so this is sound for boot
+   * — boot cost drops from O(whole ledger) to O(tail). It does NOT re-detect
+   * tampering of already-checkpointed rows; that is the job of the periodic
+   * `{ full: true }` re-verification (see AuditVerifierJob).
+   *
+   * Full (`{ full: true }`): ignores the checkpoint and verifies from genesis.
+   * On success it (re)writes the checkpoint to the new tip.
+   *
+   * The audit engine is never disabled or muted (AGENTS.md hard rule #1):
+   * verification always runs; this only changes *how much* runs synchronously.
+   */
+  async verifyChain(opts?: { full?: boolean }): Promise<{ ok: true } | { ok: false; broken_at: number }> {
+    let startAfter = 0;
     let prev = GENESIS_HASH;
-    for (const row of rows) {
+    if (!opts?.full) {
+      const cp = this.selectCheckpoint.get() as { event_id: number; hash: string } | undefined;
+      if (cp) {
+        startAfter = cp.event_id;
+        prev = cp.hash;
+      }
+    }
+
+    const iter = this.store.db
+      .prepare(
+        "SELECT event_id, ts, kind, envelope_json, payload_json, prev_hash, hash FROM events WHERE event_id > ? ORDER BY event_id",
+      )
+      .iterate(startAfter) as IterableIterator<{
+        event_id: number; ts: string; kind: string; envelope_json: string; payload_json: string; prev_hash: string; hash: string;
+      }>;
+
+    let count = 0;
+    let lastId = startAfter;
+    let lastHash = prev;
+    for (const row of iter) {
       if (row.prev_hash !== prev) return { ok: false, broken_at: row.event_id };
       const expected = computeRowHash(row.prev_hash, row.ts, row.kind, row.envelope_json, row.payload_json);
       if (expected !== row.hash) return { ok: false, broken_at: row.event_id };
       prev = row.hash;
+      lastId = row.event_id;
+      lastHash = row.hash;
+      if (++count % AuditEngine.VERIFY_YIELD_EVERY === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }
+
+    if (lastId > startAfter) {
+      this.advanceCheckpoint.run(lastId, lastHash, new Date().toISOString());
     }
     return { ok: true };
   }

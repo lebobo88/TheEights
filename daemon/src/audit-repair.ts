@@ -222,8 +222,9 @@ async function main(): Promise<void> {
       snapshot_dir: snapshotDir ? basename(snapshotDir) : null,
     });
 
-    // Final verify.
-    const post = audit.verifyChain();
+    // Final verify — full pass from genesis (repair rewrote rows, so the
+    // persisted checkpoint can't be trusted here).
+    const post = await audit.verifyChain({ full: true });
     if (!post.ok) {
       process.stderr.write(`[audit-repair] FAILED — chain still broken at ${post.broken_at}\n`);
       store.close();

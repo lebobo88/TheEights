@@ -37,7 +37,7 @@ export function registerAuditTools(audit: AuditEngine, sql: SqliteStore) {
     },
     "eights.audit.verify": {
       schema: VerifyArgs,
-      handler: () => audit.verifyChain(),
+      handler: () => audit.verifyChain({ full: true }),
     },
   } as const;
 }

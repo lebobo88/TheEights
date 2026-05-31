@@ -21,6 +21,28 @@ export class SqliteStore {
     this.db.exec(MIGRATIONS_V1);
     this.applyV2();
     this.applyV3();
+    this.applyV4();
+  }
+
+  /**
+   * V4 — verified high-water mark for the audit hash chain.
+   *
+   * Single-row table (id pinned to 1). `verifyChain` advances {event_id, hash}
+   * after a successful pass so subsequent boots only re-verify the tail
+   * (event_id > checkpoint.event_id) instead of re-hashing the whole ledger.
+   * The on-conflict guard keeps the mark monotonic, so concurrent daemon
+   * processes (each MCP client spawns its own) can only ever push it forward.
+   */
+  private applyV4(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS audit_checkpoint (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        event_id INTEGER NOT NULL,
+        hash TEXT NOT NULL,
+        verified_at TEXT NOT NULL
+      );
+      INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (4, datetime('now'));
+    `);
   }
 
   private applyV3(): void {

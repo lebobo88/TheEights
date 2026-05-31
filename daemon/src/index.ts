@@ -31,6 +31,7 @@ import { CellClassifier } from "./cognitive/cell-classifier.js";
 import { MemoryStewardJob } from "./cognitive/memory-steward.js";
 import { CostAnalystJob } from "./cognitive/cost-analyst.js";
 import { IolausJob } from "./cognitive/iolaus.js";
+import { AuditVerifierJob, type AuditGate } from "./cognitive/audit-verifier.js";
 import { PromptRegistrar } from "./engines/registrars/prompts.js";
 import { OtelSink } from "./observability/otel-sink.js";
 import { loadProviderConfig, createEmbedder, createCompleter } from "./providers/index.js";
@@ -150,35 +151,29 @@ async function main(): Promise<void> {
   }
 
   const audit = new AuditEngine(sql, cfg.eventsDir);
-  const chain = audit.verifyChain();
-  if (!chain.ok) {
-    // D2b — diagnostics first. The bootstrap session's -32000 was THIS exit
-    // path firing under the dual-spawn race (AgentSmith + Claude Code MCP
-    // host both spawning, hash chain interleaved). Now that the singleton
-    // guard above prevents the race, future spawns will keep the chain
-    // intact — but historical damage persists until the operator repairs.
-    //
-    // EIGHTS_SKIP_AUDIT_CHECK=1 lets the operator boot the daemon despite
-    // a broken chain so MCP tools come back online. Audit writes from the
-    // current session continue past `broken_at`; forensic repair (chain
-    // rebuild from `~/.eights/events/*.jsonl`) is a separate operation.
-    log.error({ broken_at: chain.broken_at }, "AUDIT CHAIN BROKEN");
-    process.stderr.write(
-      `[eights-daemon] AUDIT CHAIN BROKEN at row ${chain.broken_at}. ` +
-      `Set EIGHTS_SKIP_AUDIT_CHECK=1 in .mcp.json env to boot anyway.\n`,
-    );
-    if (process.env.EIGHTS_SKIP_AUDIT_CHECK !== "1") {
-      // Throw instead of process.exit(2) so the diagnostic flows through the
-      // bottom-of-file `main().catch` handler which writes a useful stderr
-      // line + clears the pidfile. Bare process.exit(2) killed the daemon
-      // before Claude Code could surface anything other than -32000.
-      throw new Error(`AUDIT CHAIN BROKEN at ${chain.broken_at}`);
-    }
-    process.stderr.write(
-      `[eights-daemon] EIGHTS_SKIP_AUDIT_CHECK=1 set — continuing despite broken chain\n`,
-    );
-    log.warn({ broken_at: chain.broken_at }, "audit chain check skipped per EIGHTS_SKIP_AUDIT_CHECK=1");
-  }
+
+  // Fail-closed readiness gate (D3). The stdio transport comes up BEFORE the
+  // hash chain is verified, so the Hydra gateway's connect handshake returns
+  // immediately instead of timing out on a large ledger (the chain grew to
+  // 600k+ events and the old synchronous full verify took 6–26s, exceeding the
+  // gateway's 10s connect timeout — every consumer saw "backend not connected").
+  // Until verification passes, every tool call is refused (see mcp/server.ts).
+  // The audit engine is never disabled or muted (AGENTS.md hard rule #1): the
+  // full chain is still verified, just off the connect critical path. Boot
+  // verifies only the tail past the persisted checkpoint; a daily background
+  // job re-verifies from genesis (cognitive/audit-verifier.ts).
+  let auditReady = false;
+  let auditReason: string | undefined = "audit verification in progress";
+  const auditGate: AuditGate = {
+    pass() {
+      auditReady = true;
+      auditReason = undefined;
+    },
+    fail(reason: string) {
+      auditReady = false;
+      auditReason = reason;
+    },
+  };
 
   const policy = new PolicyEngine(sql);
   const providerCfg = loadProviderConfig();
@@ -269,14 +264,10 @@ async function main(): Promise<void> {
   const watchersDisabled = process.env.EIGHTS_DISABLE_WATCHERS === "1";
   if (watchersDisabled) {
     log.warn("EIGHTS_DISABLE_WATCHERS=1 — skipping all watchers and scheduled jobs");
-  } else {
-    stewardJob.start();
-    costJob.start();
-    iolausJob.start();
-    ppWatcher.start();
-    execWatcher.start();
-    rlmWatcher.start();
   }
+  // Background work (watchers, scheduled jobs, miner) is deferred until the
+  // audit chain verifies — see startBackgroundWork() below. These jobs write
+  // audited events, so none may run on an unverified chain.
 
   const registrars = {
     pp: new PpRegistrar(evolution, log),
@@ -286,9 +277,26 @@ async function main(): Promise<void> {
   };
 
   const miner = new Miner(sql, memory, audit, log, evolution, completer);
-  if (!watchersDisabled) miner.startScheduled();
 
   const bom = new BomEngine(sql);
+
+  // Daily full re-verification of the chain (catches tamper of rows already
+  // covered by the boot checkpoint). Flips the gate fail-closed on failure.
+  const auditVerifier = new AuditVerifierJob(audit, auditGate, log);
+
+  // Starts every audited background producer. Invoked only after the chain
+  // verifies (or the operator override is set), never on a broken chain.
+  const startBackgroundWork = (): void => {
+    if (watchersDisabled) return;
+    stewardJob.start();
+    costJob.start();
+    iolausJob.start();
+    ppWatcher.start();
+    execWatcher.start();
+    rlmWatcher.start();
+    miner.startScheduled();
+    auditVerifier.start();
+  };
 
   const tools: ToolMap = {
     ...registerMemoryTools(memory),
@@ -308,7 +316,7 @@ async function main(): Promise<void> {
   const shutdown = async (sig: string): Promise<void> => {
     log.info({ sig }, "shutting down");
     ppWatcher.stop(); execWatcher.stop(); rlmWatcher.stop(); miner.stop();
-    stewardJob.stop(); costJob.stop(); iolausJob.stop(); otel.stop();
+    stewardJob.stop(); costJob.stop(); iolausJob.stop(); auditVerifier.stop(); otel.stop();
     try { await graph.close(); } catch { /* ignore */ }
     sql.close();
     clearPidfile(cfg.home);  // D2b — release the singleton guard
@@ -317,8 +325,40 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
-  await startMcpServer(tools, { name: "eights-daemon", version: "0.3.0" });
+  // Transport up FIRST — answers the gateway's initialize handshake in <1s.
+  await startMcpServer(tools, {
+    name: "eights-daemon",
+    version: "0.3.0",
+    ready: () => ({ ok: auditReady, reason: auditReason }),
+  });
   log.info("eights-daemon stdio MCP transport active");
+
+  // Verify the chain off the critical path, then open the gate and start the
+  // audited background producers. Tools are refused until this resolves.
+  void (async () => {
+    const result = await audit.verifyChain();
+    if (result.ok) {
+      auditGate.pass();
+      log.info("audit chain verified");
+      startBackgroundWork();
+    } else if (process.env.EIGHTS_SKIP_AUDIT_CHECK === "1") {
+      auditGate.pass();
+      process.stderr.write(
+        `[eights-daemon] EIGHTS_SKIP_AUDIT_CHECK=1 set — continuing despite broken chain\n`,
+      );
+      log.warn({ broken_at: result.broken_at }, "audit chain check skipped per EIGHTS_SKIP_AUDIT_CHECK=1");
+      startBackgroundWork();
+    } else {
+      // Fail-closed: transport stays up for diagnostics, but every tool is
+      // refused and no audited background producer starts.
+      auditGate.fail(`AUDIT CHAIN BROKEN at ${result.broken_at}`);
+      log.error({ broken_at: result.broken_at }, "AUDIT CHAIN BROKEN — tools fail-closed");
+      process.stderr.write(
+        `[eights-daemon] AUDIT CHAIN BROKEN at row ${result.broken_at}. ` +
+        `Tools are refused. Set EIGHTS_SKIP_AUDIT_CHECK=1 in .mcp.json env to boot anyway.\n`,
+      );
+    }
+  })();
 }
 
 /** Seed per-kind judge rubrics as frozen critical resources (ADR-0008, invariant #7). */

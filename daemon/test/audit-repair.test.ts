@@ -52,7 +52,7 @@ describe("audit-repair — forensic chain rebuild", () => {
     expect(r.rehashed_count).toBe(0);
   });
 
-  it("repairs a chain broken by the 1326/1336/1337 dual-spawn pattern", () => {
+  it("repairs a chain broken by the 1326/1336/1337 dual-spawn pattern", async () => {
     // Simulate two processes interleaving writes. Rows 1..3 land cleanly via the
     // real AuditEngine. Then a second process appends two more rows both chained
     // off row 3's hash (stale prevHash) — exactly the failure mode that produced
@@ -83,7 +83,7 @@ describe("audit-repair — forensic chain rebuild", () => {
     expect(result.rehashed_count).toBeGreaterThan(0);
 
     // Verify via the same algorithm the daemon uses at startup.
-    const verify = audit.verifyChain();
+    const verify = await audit.verifyChain();
     expect(verify.ok).toBe(true);
 
     // No real event payloads lost — all 5 distinct payloads survive.
@@ -107,7 +107,7 @@ describe("audit-repair — forensic chain rebuild", () => {
     expect(totalLines).toBe(5);
   });
 
-  it("dedupes exact-duplicate content rows from a race", () => {
+  it("dedupes exact-duplicate content rows from a race", async () => {
     // Two rows with identical content but written by racing processes.
     const ts = "2026-05-19T15:00:00.000Z";
     insertRaw(store, ts, "boot", { x: 1 }, GENESIS_HASH);
@@ -119,6 +119,6 @@ describe("audit-repair — forensic chain rebuild", () => {
     expect(result.rows_after).toBe(1);
 
     const audit = new AuditEngine(store, eventsDir);
-    expect(audit.verifyChain().ok).toBe(true);
+    expect((await audit.verifyChain()).ok).toBe(true);
   });
 });

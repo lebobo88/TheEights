@@ -41,7 +41,7 @@ describe("audit concurrency — DB-driven prev_hash", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("keeps chain intact when two AuditEngine instances share a store", () => {
+  it("keeps chain intact when two AuditEngine instances share a store", async () => {
     // Two engines = simulated dual-spawn (Claude Code child + AgentSmith bridge
     // child both opening the same ~/.eights/state.db). Both start with empty
     // in-memory state and append in interleaved order.
@@ -53,14 +53,14 @@ describe("audit concurrency — DB-driven prev_hash", () => {
       b.record("b.tick", env, { i });
     }
 
-    const verify = a.verifyChain();
+    const verify = await a.verifyChain();
     expect(verify.ok).toBe(true);
 
     const count = (store.db.prepare("SELECT COUNT(*) AS n FROM events").get() as { n: number }).n;
     expect(count).toBe(100);
   });
 
-  it("keeps chain intact when engines are constructed mid-stream (stale bootstrap)", () => {
+  it("keeps chain intact when engines are constructed mid-stream (stale bootstrap)", async () => {
     // Under the old design, the second engine's constructor cached prev_hash =
     // <hash of latest row at construction time>. If the first engine then wrote
     // more rows, the second engine's cached value went stale and its next
@@ -87,7 +87,7 @@ describe("audit concurrency — DB-driven prev_hash", () => {
     first.record("first.write", env, { i: 6 });
     second.record("second.write", env, { i: 3 });
 
-    expect(first.verifyChain().ok).toBe(true);
-    expect(second.verifyChain().ok).toBe(true);
+    expect((await first.verifyChain()).ok).toBe(true);
+    expect((await second.verifyChain()).ok).toBe(true);
   });
 });

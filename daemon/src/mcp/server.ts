@@ -22,7 +22,20 @@ export interface ToolDef<T extends ZodTypeAny = ZodTypeAny> {
 
 export type ToolMap = Record<string, ToolDef>;
 
-export async function startMcpServer(tools: ToolMap, opts: { name: string; version: string }): Promise<void> {
+/**
+ * Fail-closed readiness gate. The daemon brings the stdio transport up before
+ * the audit chain has been verified (so the MCP handshake completes fast and
+ * the Hydra gateway doesn't time out connecting). Until `ready()` returns
+ * `{ ok: true }`, every tool call is refused. No audited read/write ever runs
+ * on an unverified chain — only the protocol handshake completes first, which
+ * keeps AGENTS.md hard rule #1 intact.
+ */
+export type ReadinessGate = () => { ok: boolean; reason?: string };
+
+export async function startMcpServer(
+  tools: ToolMap,
+  opts: { name: string; version: string; ready?: ReadinessGate },
+): Promise<void> {
   const server = new Server(
     { name: opts.name, version: opts.version },
     { capabilities: { tools: {} } },
@@ -44,6 +57,15 @@ export async function startMcpServer(tools: ToolMap, opts: { name: string; versi
         content: [{ type: "text", text: JSON.stringify({ error: `unknown tool: ${name}` }) }],
         isError: true,
       };
+    }
+    if (opts.ready) {
+      const gate = opts.ready();
+      if (!gate.ok) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: gate.reason ?? "eights-daemon not ready" }) }],
+          isError: true,
+        };
+      }
     }
     try {
       const parsed = def.schema.parse(req.params.arguments ?? {});

@@ -84,8 +84,8 @@ describe("memory engine — Phase 0 smoke", () => {
     expect(hits[0]?.path).toBe("episodic");
   });
 
-  it("hash-chains the audit log and verifies clean", () => {
-    const chain = audit.verifyChain();
+  it("hash-chains the audit log and verifies clean", async () => {
+    const chain = await audit.verifyChain();
     expect(chain.ok).toBe(true);
   });
 });
