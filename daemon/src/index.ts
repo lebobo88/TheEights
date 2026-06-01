@@ -313,11 +313,36 @@ async function main(): Promise<void> {
   };
   log.info({ tool_count: Object.keys(tools).length }, "MCP tools registered");
 
+  // Periodic WAL maintenance. A PASSIVE checkpoint is non-disruptive (it never
+  // blocks a reader and only flushes the frames it can), so running it in every
+  // daemon is safe and keeps the WAL from drifting up between auto-checkpoints.
+  // The return tuple + WAL size are logged so checkpoint starvation (busy=1,
+  // WAL not shrinking) is visible to operators instead of silently ballooning.
+  let checkpointTimer: NodeJS.Timeout | null = null;
+  const CHECKPOINT_INTERVAL_MS = 5 * 60 * 1000;
+  const runMaintenanceCheckpoint = (mode: "PASSIVE" | "TRUNCATE"): void => {
+    try {
+      const before = sql.walSizeBytes();
+      const r = sql.checkpoint(mode);
+      log.info(
+        { mode, busy: r.busy, log_frames: r.log, checkpointed: r.checkpointed,
+          wal_bytes_before: before, wal_bytes_after: sql.walSizeBytes() },
+        "wal checkpoint",
+      );
+    } catch (err) {
+      log.warn({ err: String(err), mode }, "wal checkpoint failed");
+    }
+  };
+
   const shutdown = async (sig: string): Promise<void> => {
     log.info({ sig }, "shutting down");
+    if (checkpointTimer) { clearInterval(checkpointTimer); checkpointTimer = null; }
     ppWatcher.stop(); execWatcher.stop(); rlmWatcher.stop(); miner.stop();
     stewardJob.stop(); costJob.stop(); iolausJob.stop(); auditVerifier.stop(); otel.stop();
     try { await graph.close(); } catch { /* ignore */ }
+    // Best-effort TRUNCATE on the way out: shrinks the -wal file to zero when no
+    // sibling daemon still pins the log. Never block shutdown on it.
+    runMaintenanceCheckpoint("TRUNCATE");
     sql.close();
     clearPidfile(cfg.home);  // D2b — release the singleton guard
     process.exit(0);
@@ -332,6 +357,11 @@ async function main(): Promise<void> {
     ready: () => ({ ok: auditReady, reason: auditReason }),
   });
   log.info("eights-daemon stdio MCP transport active");
+
+  // Start WAL maintenance once the transport is live (off the connect path).
+  // unref() so the timer never holds the process open on its own.
+  checkpointTimer = setInterval(() => runMaintenanceCheckpoint("PASSIVE"), CHECKPOINT_INTERVAL_MS);
+  checkpointTimer.unref?.();
 
   // Verify the chain off the critical path, then open the gate and start the
   // audited background producers. Tools are refused until this resolves.

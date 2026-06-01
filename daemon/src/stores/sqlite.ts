@@ -1,6 +1,16 @@
 import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
+
+/** Result of a `PRAGMA wal_checkpoint(<mode>)` — SQLite's three columns. */
+export interface CheckpointResult {
+  /** 0 if the checkpoint ran; 1 if it was blocked (BUSY) by a reader/writer. */
+  busy: number;
+  /** Frames in the WAL at checkpoint time (-1 if unavailable). */
+  log: number;
+  /** Frames moved into the main DB (-1 if unavailable). */
+  checkpointed: number;
+}
 
 /**
  * Episodic + audit + KV + identity + resources backbone.
@@ -15,6 +25,53 @@ export class SqliteStore {
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("synchronous = NORMAL");
     this.db.pragma("foreign_keys = ON");
+    // WAL hygiene. Concurrent persistent daemon connections (one per MCP
+    // client, by design — see index.ts D2c) can starve SQLite's auto-checkpoint
+    // because a reader pinning an old snapshot prevents the WAL from resetting.
+    // Left unmanaged the WAL grows without bound (observed at 12.7 GB), and
+    // every cold daemon open then has to recover it — blowing past the gateway's
+    // 10s connect window. These pragmas + the periodic/shutdown checkpoints in
+    // index.ts bound that growth and make reclamation observable.
+    //
+    //  - busy_timeout: wait for a lock instead of failing BUSY instantly, so a
+    //    checkpoint coexists with concurrent readers/writers.
+    //  - journal_size_limit: when a checkpoint resets the WAL, truncate the file
+    //    back to this cap (256 MB) instead of leaving it at its high-water mark.
+    //  - wal_autocheckpoint: checkpoint ~every 1000 pages (~4 MB); explicit so
+    //    the default cannot drift.
+    this.db.pragma("busy_timeout = 5000");
+    this.db.pragma("journal_size_limit = 268435456");
+    this.db.pragma("wal_autocheckpoint = 1000");
+  }
+
+  /**
+   * Run a WAL checkpoint and return SQLite's (busy, log, checkpointed) tuple.
+   * PASSIVE (default) is non-disruptive: it checkpoints whatever frames it can
+   * without blocking readers, and never resets the WAL while a reader holds an
+   * old snapshot. TRUNCATE additionally shrinks the -wal file to zero, but only
+   * succeeds when no other connection pins the log — use it on shutdown.
+   */
+  checkpoint(mode: "PASSIVE" | "FULL" | "RESTART" | "TRUNCATE" = "PASSIVE"): CheckpointResult {
+    const rows = this.db.pragma(`wal_checkpoint(${mode})`) as Array<{
+      busy?: number;
+      log?: number;
+      checkpointed?: number;
+    }>;
+    const r = rows?.[0] ?? {};
+    return {
+      busy: r.busy ?? 1,
+      log: r.log ?? -1,
+      checkpointed: r.checkpointed ?? -1,
+    };
+  }
+
+  /** Current size of the -wal sidecar in bytes (0 if absent). */
+  walSizeBytes(): number {
+    try {
+      return statSync(`${this.path}-wal`).size;
+    } catch {
+      return 0;
+    }
   }
 
   migrate(): void {
