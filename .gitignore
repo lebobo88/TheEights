@@ -14,3 +14,6 @@ __pycache__/
 
 # Local-only providers (AuthHub SDK etc.) — never committed
 daemon/src/providers/local/
+
+# Runtime scheduler lock — transient, never committed
+.claude/scheduled_tasks.lock
