@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TheEights — Blueprint</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Geist:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --blue: oklch(0.30 0.055 250);
+    --blue2: oklch(0.345 0.06 250);
+    --gridline: oklch(0.46 0.05 250 / 0.5);
+    --gridmin: oklch(0.42 0.045 250 / 0.28);
+    --ink: oklch(0.93 0.02 230);
+    --dim: oklch(0.80 0.04 230);
+    --faint: oklch(0.68 0.045 250);
+    --cyan: oklch(0.86 0.11 200);
+    --amber: oklch(0.86 0.13 85);
+    --green: oklch(0.84 0.14 158);
+    --red: oklch(0.78 0.15 25);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--blue);
+    color: var(--ink);
+    font-family: "Geist Mono", monospace;
+    -webkit-font-smoothing: antialiased;
+    font-size: 12px;
+  }
+  .sans { font-family: "Geist", sans-serif; }
+  .sheet {
+    position: relative;
+    width: 1440px; min-height: 1010px; margin: 0 auto;
+    background-image:
+      linear-gradient(var(--gridmin) 1px, transparent 1px),
+      linear-gradient(90deg, var(--gridmin) 1px, transparent 1px),
+      linear-gradient(var(--gridline) 1px, transparent 1px),
+      linear-gradient(90deg, var(--gridline) 1px, transparent 1px);
+    background-size: 20px 20px, 20px 20px, 100px 100px, 100px 100px;
+  }
+  .frame { position: absolute; inset: 18px; border: 1.5px solid var(--faint); }
+  .frame::before { content: ""; position: absolute; inset: 6px; border: 0.75px solid oklch(0.68 0.045 250 / 0.55); }
+  .inner { position: relative; padding: 40px 44px; }
+
+  .hdr { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid var(--faint); padding-bottom: 16px; }
+  .hdr .ttl { font-family: "Geist", sans-serif; font-size: 25px; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; }
+  .hdr .lft { flex: 1 1 auto; min-width: 0; }
+  .hdr .specno { flex: none; }
+  .hdr .ttl b { color: var(--cyan); }
+  .hdr .meta { font-size: 10.5px; color: var(--faint); margin-top: 6px; letter-spacing: 0.04em; }
+  .hdr .specno { text-align: right; font-size: 10.5px; color: var(--dim); line-height: 1.7; }
+  .hdr .specno b { color: var(--cyan); }
+
+  .secl { font-size: 10px; letter-spacing: 0.18em; color: var(--faint); margin: 26px 0 4px; }
+
+  .layout { display: grid; grid-template-columns: 1fr 300px; gap: 30px; margin-top: 18px; }
+
+  /* schematic */
+  svg .box { fill: oklch(0.345 0.06 250 / 0.6); stroke: var(--cyan); stroke-width: 1.2; }
+  svg .box.gate { stroke: var(--amber); }
+  svg .box.term { fill: oklch(0.84 0.14 158 / 0.14); stroke: var(--green); }
+  svg .lbl { fill: var(--ink); font: 600 12px "Geist", sans-serif; }
+  svg .sub { fill: var(--dim); font: 400 9.5px "Geist Mono", monospace; }
+  svg .flow { stroke: var(--faint); stroke-width: 1.2; fill: none; marker-end: url(#arr); }
+  svg .flow.yes { stroke: var(--green); }
+  svg .flow.no { stroke: var(--red); }
+  svg .elbl { fill: var(--faint); font: 500 9px "Geist Mono", monospace; }
+  svg .elbl.y { fill: var(--green); }
+  svg .elbl.n { fill: var(--red); }
+
+  /* side notes */
+  .note { border: 1px solid var(--faint); background: oklch(0.30 0.055 250 / 0.7); padding: 13px 14px; margin-bottom: 16px; }
+  .note h4 { font-size: 10px; letter-spacing: 0.14em; color: var(--cyan); margin-bottom: 11px; display: flex; justify-content: space-between; }
+  .rc { display: flex; align-items: center; gap: 9px; padding: 6px 0; border-bottom: 1px dotted oklch(0.68 0.045 250 / 0.4); }
+  .rc:last-child { border-bottom: 0; }
+  .rc .sq { width: 10px; height: 10px; flex: none; border: 1px solid; }
+  .rc .nm { font-size: 11px; color: var(--ink); width: 64px; }
+  .rc .ar { margin-left: auto; font-size: 10px; color: var(--dim); }
+  .inv { font-size: 10.5px; line-height: 1.5; color: var(--dim); padding: 4px 0; display: flex; gap: 8px; }
+  .inv .n { color: var(--cyan); flex: none; }
+  .gates { columns: 1; }
+  .gline { display: flex; gap: 8px; font-size: 10.5px; padding: 4px 0; color: var(--dim); }
+  .gline .gn { color: var(--cyan); }
+
+  /* title block */
+  .titleblock { display: grid; grid-template-columns: repeat(4, 1fr); border: 1.5px solid var(--faint); margin-top: 26px; }
+  .tb { border-right: 1px solid var(--faint); padding: 10px 13px; }
+  .tb:last-child { border-right: 0; }
+  .tb .k { font-size: 9px; letter-spacing: 0.1em; color: var(--faint); }
+  .tb .v { font-size: 13px; color: var(--ink); margin-top: 4px; font-weight: 500; }
+  .tb .v b { color: var(--cyan); }
+  .dimnote { position: absolute; font-size: 9px; color: var(--faint); letter-spacing: 0.05em; }
+</style>
+</head>
+<body>
+<div class="sheet" data-screen-label="Blueprint Schematic">
+  <div class="frame"></div>
+  <div class="inner">
+    <div class="hdr">
+      <div class="lft">
+        <div class="ttl sans">The<b>Eights</b> — Gated Self-Evolution Loop</div>
+        <div class="meta">RSPL / SEPL ENGINE · AUTOGENESIS RESOURCE MODEL · ADR-0004 / 0006 / 0007</div>
+      </div>
+      <div class="specno">
+        DWG. <b>TE-EVO-01</b> &nbsp; REV <b>0.3.0</b><br />
+        SCALE — NOT TO SCALE<br />
+        1,284 RESOURCES · 4 CONSUMERS<br />
+        SHEET 1 OF 1
+      </div>
+    </div>
+
+    <div class="layout">
+      <div>
+        <div class="secl">FIG. 1 — PROPOSE → EVALUATE → COMMIT | QUEUE</div>
+        <svg width="100%" viewBox="0 0 760 540" style="margin-top:10px">
+          <defs>
+            <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--faint)"/></marker>
+          </defs>
+
+          <!-- Miner -->
+          <g><rect class="box" x="40" y="20" width="180" height="54" rx="2"/><text class="lbl" x="56" y="44">Nightly Pattern Miner</text><text class="sub" x="56" y="60">cross-project · hourly scan</text></g>
+          <!-- Propose -->
+          <g><rect class="box" x="290" y="20" width="180" height="54" rx="2"/><text class="lbl" x="306" y="44">Propose</text><text class="sub" x="306" y="60">evolution.propose</text></g>
+          <!-- Evaluate -->
+          <g><rect class="box gate" x="540" y="20" width="180" height="54" rx="2"/><text class="lbl" x="556" y="44">Evaluate</text><text class="sub" x="556" y="60">llm-judge · backtest · Δ</text></g>
+
+          <!-- risk diamond -->
+          <g><path class="box gate" d="M630 130 L710 175 L630 220 L550 175 Z"/><text class="lbl" x="600" y="172">risk_class?</text><text class="sub" x="585" y="188">SSGM gates</text></g>
+
+          <!-- low-risk -> auto commit -->
+          <g><rect class="box term" x="350" y="148" width="170" height="54" rx="2"/><text class="lbl" x="366" y="172">Auto-Commit</text><text class="sub" x="366" y="188">low · eval Δ ≥ 0</text></g>
+          <!-- HITL queue -->
+          <g><rect class="box gate" x="550" y="280" width="170" height="54" rx="2"/><text class="lbl" x="566" y="304">HITL Queue</text><text class="sub" x="566" y="320">medium · high</text></g>
+
+          <!-- writebridge -->
+          <g><rect class="box" x="350" y="280" width="170" height="54" rx="2"/><text class="lbl" x="366" y="304">WriteBridge</text><text class="sub" x="366" y="320">theeights/auto branch</text></g>
+          <!-- re-register -->
+          <g><rect class="box" x="350" y="380" width="170" height="54" rx="2"/><text class="lbl" x="366" y="404">Re-register</text><text class="sub" x="366" y="420">drift detector arms</text></g>
+          <!-- frozen -->
+          <g><rect class="box" x="60" y="280" width="170" height="54" rx="2" style="stroke:var(--red)"/><text class="lbl" x="76" y="304">Frozen</text><text class="sub" x="76" y="320">critical · immutable</text></g>
+
+          <!-- flows -->
+          <path class="flow" d="M220 47 L286 47"/>
+          <path class="flow" d="M470 47 L536 47"/>
+          <path class="flow" d="M630 74 L630 126"/>
+          <path class="flow yes" d="M550 165 L524 160"/><text class="elbl y" x="470" y="150">low → auto</text>
+          <path class="flow no" d="M630 220 L635 276"/><text class="elbl n" x="640" y="252">med/high</text>
+          <path class="flow" d="M550 307 L524 307"/><text class="elbl y" x="525" y="298">approve</text>
+          <path class="flow" d="M435 202 L435 276"/>
+          <path class="flow" d="M435 334 L435 376"/>
+          <!-- loop back to miner -->
+          <path class="flow" d="M350 407 L40 407 L40 74" style="stroke-dasharray:4 4"/><text class="elbl" x="120" y="398">drift detected → re-mine</text>
+          <!-- frozen guard -->
+          <path class="flow no" d="M548 175 L232 290" style="stroke-dasharray:3 3;opacity:0.6"/><text class="elbl n" x="250" y="240">critical ✕ never</text>
+
+          <text class="sub" x="40" y="470" style="fill:var(--faint)">NOTE: low-risk auto-commits only when eval Δ ≥ 0 AND all SSGM gates pass. Non-low classes require operator-signed HITL approval (HARD RULE #5).</text>
+          <text class="sub" x="40" y="490" style="fill:var(--faint)">NOTE: WriteBridge writes are path-contained to each consumer's allowlisted root (ADR-0007, HARD RULE #6).</text>
+        </svg>
+
+        <div class="titleblock">
+          <div class="tb"><div class="k">PENDING HITL</div><div class="v"><b>21</b> proposals</div></div>
+          <div class="tb"><div class="k">COMMITTED</div><div class="v">0 / auto: low only</div></div>
+          <div class="tb"><div class="k">EVAL GATE</div><div class="v">Δ ≥ 0 required</div></div>
+          <div class="tb"><div class="k">AUDIT</div><div class="v"><b>hash</b>-chained</div></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="note">
+          <h4>RISK-CLASS ROUTING <span>§4.3</span></h4>
+          <div class="rc"><span class="sq" style="border-color:var(--green);background:oklch(0.84 0.14 158 / 0.2)"></span><span class="nm">low</span><span class="ar">→ auto-commit</span></div>
+          <div class="rc"><span class="sq" style="border-color:var(--amber);background:oklch(0.86 0.13 85 / 0.15)"></span><span class="nm">medium</span><span class="ar">→ hitl-only</span></div>
+          <div class="rc"><span class="sq" style="border-color:var(--amber);background:oklch(0.86 0.13 85 / 0.15)"></span><span class="nm">high</span><span class="ar">→ hitl-only</span></div>
+          <div class="rc"><span class="sq" style="border-color:var(--red);background:oklch(0.78 0.15 25 / 0.15)"></span><span class="nm">critical</span><span class="ar">→ frozen</span></div>
+        </div>
+
+        <div class="note">
+          <h4>SSGM GATES — FIRE ON COMMIT</h4>
+          <div class="gates">
+            <div class="gline"><span class="gn">01</span> Consistency vs same type+scope</div>
+            <div class="gline"><span class="gn">02</span> Temporal-decay sanity</div>
+            <div class="gline"><span class="gn">03</span> Access-control invariant</div>
+            <div class="gline"><span class="gn">04</span> Safety-filter (frozen) check</div>
+            <div class="gline"><span class="gn">05</span> Eval delta ≥ 0</div>
+          </div>
+        </div>
+
+        <div class="note">
+          <h4>HARD INVARIANTS — IMMUTABLE</h4>
+          <div class="inv"><span class="n">1</span> Tenant + scope isolation</div>
+          <div class="inv"><span class="n">2</span> Audit immutability</div>
+          <div class="inv"><span class="n">3</span> Critical resources frozen</div>
+          <div class="inv"><span class="n">5</span> No HITL bypass</div>
+          <div class="inv"><span class="n">6</span> WriteBridge sandboxing</div>
+          <div class="inv"><span class="n">7</span> Eval rubric immutability</div>
+          <div class="inv"><span class="n">8</span> Constitution attestation</div>
+          <div class="inv"><span class="n">10</span> OTEL loopback-only</div>
+          <div style="font-size:9.5px;color:var(--faint);margin-top:8px">+ 2 more · see ARCHITECTURE §12</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

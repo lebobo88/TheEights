@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TheEights — Mission Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: oklch(0.16 0.012 250);
+    --bg2: oklch(0.185 0.013 250);
+    --panel: oklch(0.205 0.014 250);
+    --panel2: oklch(0.235 0.015 250);
+    --line: oklch(0.30 0.014 250);
+    --line2: oklch(0.38 0.015 250);
+    --ink: oklch(0.94 0.008 250);
+    --muted: oklch(0.66 0.013 250);
+    --faint: oklch(0.52 0.012 250);
+    --live: oklch(0.80 0.15 158);
+    --mem: oklch(0.80 0.12 205);
+    --evo: oklch(0.74 0.14 300);
+    --hitl: oklch(0.82 0.145 80);
+    --red: oklch(0.68 0.18 25);
+    --mcp: oklch(0.74 0.13 255);
+    font-synthesis: none;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Geist", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    font-size: 13px;
+    letter-spacing: -0.01em;
+  }
+  .mono { font-family: "Geist Mono", monospace; }
+  .app { display: flex; flex-direction: column; min-height: 100vh; }
+
+  /* top bar */
+  .topbar {
+    display: flex; align-items: center; gap: 18px;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, var(--bg2), var(--bg));
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; }
+  .brand .mark { font-weight: 700; font-size: 16px; letter-spacing: -0.02em; }
+  .brand .mark b { color: var(--live); }
+  .brand .ver { font-size: 11px; color: var(--faint); }
+  .pillrow { display: flex; gap: 8px; margin-left: auto; align-items: center; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; font-family: "Geist Mono", monospace;
+    padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px;
+    color: var(--muted); background: var(--panel);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--live); box-shadow: 0 0 0 0 var(--live); }
+  .dot.live { animation: pulse 2.2s infinite; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 oklch(0.80 0.15 158 / 0.5); }
+    70% { box-shadow: 0 0 0 7px oklch(0.80 0.15 158 / 0); }
+    100% { box-shadow: 0 0 0 0 oklch(0.80 0.15 158 / 0); }
+  }
+  .pill.ok { color: var(--live); }
+  .pill.warn { color: var(--hitl); border-color: oklch(0.82 0.145 80 / 0.4); }
+
+  /* kpi row */
+  .kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 1px; background: var(--line); border-bottom: 1px solid var(--line); }
+  .kpi { background: var(--bg); padding: 16px 20px; }
+  .kpi .label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--faint); margin-bottom: 8px; }
+  .kpi .val { font-family: "Geist Mono", monospace; font-size: 27px; font-weight: 500; letter-spacing: -0.02em; line-height: 1; }
+  .kpi .sub { font-size: 11px; color: var(--muted); margin-top: 7px; }
+  .kpi .val.amber { color: var(--hitl); }
+  .kpi .val.live { color: var(--live); }
+
+  /* main grid */
+  .grid { display: grid; grid-template-columns: 1fr 1.5fr 1fr; gap: 16px; padding: 16px 24px 28px; flex: 1; }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .card > h3 {
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); padding: 12px 14px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .card > h3 .tag { font-family: "Geist Mono", monospace; font-weight: 400; color: var(--faint); font-size: 10.5px; }
+  .body { padding: 12px 14px; }
+
+  /* substrate stack */
+  .layer { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 7px; margin-bottom: 5px; border: 1px solid transparent; }
+  .layer:hover { background: var(--panel2); border-color: var(--line); }
+  .layer .ln { font-family: "Geist Mono", monospace; font-size: 10px; color: var(--faint); width: 22px; flex: none; }
+  .layer .nm { font-size: 12.5px; font-weight: 500; }
+  .layer .ds { font-size: 11px; color: var(--muted); margin-left: auto; font-family: "Geist Mono", monospace; }
+  .layer.hl { background: oklch(0.74 0.13 255 / 0.12); border-color: oklch(0.74 0.13 255 / 0.35); }
+  .layer.hl .nm { color: var(--mcp); }
+
+  /* consumers */
+  .consumer { padding: 9px 0; border-bottom: 1px dashed var(--line); }
+  .consumer:last-child { border-bottom: 0; }
+  .consumer .top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .consumer .name { font-weight: 600; font-size: 12.5px; }
+  .consumer .role { font-size: 10.5px; color: var(--faint); margin-left: auto; }
+  .bar { height: 6px; border-radius: 3px; background: var(--bg); overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 3px; }
+  .consumer .cnt { font-family: "Geist Mono", monospace; font-size: 10.5px; color: var(--muted); }
+
+  /* growth chart */
+  .chart { display: flex; align-items: flex-end; gap: 5px; height: 130px; padding: 6px 2px 0; }
+  .chart .b { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 5px; height: 100%; justify-content: flex-end; }
+  .chart .b > i { width: 100%; border-radius: 3px 3px 0 0; background: linear-gradient(180deg, var(--mem), oklch(0.80 0.12 205 / 0.35)); min-height: 2px; transition: height .8s cubic-bezier(.2,.8,.2,1); }
+  .chart .b.peak > i { background: linear-gradient(180deg, var(--hitl), oklch(0.82 0.145 80 / 0.3)); }
+  .chart .b .d { font-family: "Geist Mono", monospace; font-size: 9px; color: var(--faint); }
+  .chartnote { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); margin-top: 8px; }
+
+  /* event stream */
+  .stream { font-family: "Geist Mono", monospace; font-size: 11px; max-height: 196px; overflow: hidden; }
+  .ev { display: flex; gap: 8px; padding: 5px 0; border-bottom: 1px solid oklch(0.30 0.014 250 / 0.5); align-items: baseline; opacity: 1; animation: slidein .4s ease; }
+  @keyframes slidein { from { transform: translateY(-5px); } to { transform: none; } }
+  .ev .t { color: var(--faint); flex: none; }
+  .ev .k { flex: none; }
+  .ev .k.add { color: var(--mem); }
+  .ev .k.rej { color: var(--red); }
+  .ev .k.evo { color: var(--evo); }
+  .ev .a { color: var(--muted); margin-left: auto; flex: none; }
+
+  /* hitl queue */
+  .prop { padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; margin-bottom: 7px; background: var(--bg2); }
+  .prop .ph { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .prop .rid { font-family: "Geist Mono", monospace; font-size: 11px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prop .by { font-size: 10.5px; color: var(--faint); }
+  .risk { font-size: 9.5px; font-family: "Geist Mono", monospace; padding: 2px 6px; border-radius: 4px; flex: none; text-transform: uppercase; letter-spacing: 0.04em; }
+  .risk.med { background: oklch(0.82 0.145 80 / 0.18); color: var(--hitl); }
+  .risk.high { background: oklch(0.68 0.18 25 / 0.16); color: var(--red); }
+  .gaterow { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
+  .gaterow:last-child { border-bottom: 0; }
+  .gaterow .gi { width: 6px; height: 6px; border-radius: 50%; background: var(--live); flex: none; }
+  .gaterow .gi.frozen { background: var(--mcp); }
+  .gaterow .gv { margin-left: auto; font-family: "Geist Mono", monospace; font-size: 10.5px; color: var(--muted); }
+  .footnote { padding: 12px 24px; border-top: 1px solid var(--line); color: var(--faint); font-size: 10.5px; font-family: "Geist Mono", monospace; display: flex; gap: 18px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="app" data-screen-label="Mission Control">
+  <div class="topbar">
+    <div class="brand">
+      <span class="mark">The<b>Eights</b></span>
+      <span class="ver mono">eights-daemon v0.3.0 · MCP stdio</span>
+    </div>
+    <div class="pillrow">
+      <span class="pill ok"><span class="dot live"></span> daemon live</span>
+      <span class="pill">boot 0.8s</span>
+      <span class="pill ok">chain verified</span>
+      <span class="pill">43/43 tests</span>
+      <span class="pill warn">21 HITL pending</span>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi">
+      <div class="label">Audit events</div>
+      <div class="val" data-count="658280">0</div>
+      <div class="sub">hash-chained · 418 MB jsonl</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Ledger size</div>
+      <div class="val">2.2 <span style="font-size:15px;color:var(--muted)">GB</span></div>
+      <div class="sub">~/.eights/state.db (WAL)</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Evolvable resources</div>
+      <div class="val" data-count="1284">0</div>
+      <div class="sub">4 consumers · 1,288 ML-BOM</div>
+    </div>
+    <div class="kpi">
+      <div class="label">HITL queue</div>
+      <div class="val amber" data-count="21">0</div>
+      <div class="sub">0 approved · 0 committed</div>
+    </div>
+    <div class="kpi">
+      <div class="label">MCP surface</div>
+      <div class="val">65<span style="font-size:15px;color:var(--muted)"> tools</span></div>
+      <div class="sub">12 namespaces</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Memory chain</div>
+      <div class="val live">100<span style="font-size:15px;color:var(--muted)">%</span></div>
+      <div class="sub">tamper-evident · clean</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- LEFT -->
+    <div class="col">
+      <div class="card">
+        <h3>Substrate stack <span class="tag">L7 → L1</span></h3>
+        <div class="body">
+          <div class="layer"><span class="ln">L7</span><span class="nm">Adapters</span><span class="ds">4 bridges</span></div>
+          <div class="layer hl"><span class="ln">L6</span><span class="nm">MCP surface</span><span class="ds">65 tools</span></div>
+          <div class="layer"><span class="ln">L5</span><span class="nm">Cognitive services</span><span class="ds">4 jobs</span></div>
+          <div class="layer"><span class="ln">L4</span><span class="nm">Core engines</span><span class="ds">18</span></div>
+          <div class="layer"><span class="ln">L3</span><span class="nm">Storage drivers</span><span class="ds">vec·graph·sql</span></div>
+          <div class="layer"><span class="ln">L2</span><span class="nm">Daemon runtime</span><span class="ds">Node 20</span></div>
+          <div class="layer"><span class="ln">L1</span><span class="nm">Filesystem</span><span class="ds">~/.eights</span></div>
+        </div>
+      </div>
+      <div class="card" style="flex:1">
+        <h3>Connected consumers <span class="tag">event share</span></h3>
+        <div class="body">
+          <div class="consumer">
+            <div class="top"><span class="name">pair-programmer</span><span class="role">39 agents · 22 teams</span></div>
+            <div class="bar"><i style="width:96%;background:var(--mem)"></i></div>
+            <div class="cnt" style="margin-top:5px">631,591 events · 96% · 59 resources</div>
+          </div>
+          <div class="consumer">
+            <div class="top"><span class="name">Hydra</span><span class="role">LangGraph supervisor</span></div>
+            <div class="bar"><i style="width:8%;background:var(--evo)"></i></div>
+            <div class="cnt" style="margin-top:5px">8 squads · envelope store</div>
+          </div>
+          <div class="consumer">
+            <div class="top"><span class="name">ExecutiveSuite</span><span class="role">20 C-suite roles</span></div>
+            <div class="bar"><i style="width:6%;background:var(--hitl)"></i></div>
+            <div class="cnt" style="margin-top:5px">42 governed resources</div>
+          </div>
+          <div class="consumer">
+            <div class="top"><span class="name">RLM-Creative</span><span class="role">14+ siblings</span></div>
+            <div class="bar"><i style="width:18%;background:var(--mcp)"></i></div>
+            <div class="cnt" style="margin-top:5px">1,175 governed resources</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CENTER -->
+    <div class="col">
+      <div class="card">
+        <h3>Ledger growth <span class="tag">memory.add / day · tracks pp activity</span></h3>
+        <div class="body">
+          <div class="chart" id="chart"></div>
+          <div class="chartnote"><span>May 19</span><span style="color:var(--hitl)">peak 186,626 · May 23</span><span>May 31</span></div>
+        </div>
+      </div>
+      <div class="card" style="flex:1">
+        <h3>Live event stream <span class="tag"><span class="dot live" style="display:inline-block"></span> tail -f events.jsonl</span></h3>
+        <div class="body"><div class="stream" id="stream"></div></div>
+      </div>
+    </div>
+
+    <!-- RIGHT -->
+    <div class="col">
+      <div class="card">
+        <h3>HITL queue <span class="tag">21 pending · 0 seen</span></h3>
+        <div class="body">
+          <div class="prop">
+            <div class="ph"><span class="rid">rlm/cms-content-block-registry</span><span class="risk med">med</span></div>
+            <div class="by mono">hydra-supervisor · 2026-05-25</div>
+          </div>
+          <div class="prop">
+            <div class="ph"><span class="rid">hydra/squad.engineering.routing</span><span class="risk high">high</span></div>
+            <div class="by mono">hydra-supervisor · eval Δ +0.12</div>
+          </div>
+          <div class="prop">
+            <div class="ph"><span class="rid">pp/team.feature-team-tdd</span><span class="risk med">med</span></div>
+            <div class="by mono">claude-orchestrator · eval Δ +0.08</div>
+          </div>
+          <div class="prop">
+            <div class="ph"><span class="rid">execsuite/rubric.ma-dossier</span><span class="risk high">high</span></div>
+            <div class="by mono">claude-orchestrator · eval Δ +0.05</div>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="flex:1">
+        <h3>Governance plane <span class="tag">SSGM · LASM</span></h3>
+        <div class="body">
+          <div class="gaterow"><span class="gi"></span> Consistency gate <span class="gv">passing</span></div>
+          <div class="gaterow"><span class="gi"></span> Temporal-decay gate <span class="gv">passing</span></div>
+          <div class="gaterow"><span class="gi"></span> Access-control gate <span class="gv">passing</span></div>
+          <div class="gaterow"><span class="gi frozen"></span> Safety filters <span class="gv">frozen</span></div>
+          <div class="gaterow"><span class="gi"></span> Budget ledger <span class="gv">proceed</span></div>
+          <div class="gaterow"><span class="gi"></span> Circuit breaker <span class="gv">0 tripped</span></div>
+          <div class="gaterow"><span class="gi frozen"></span> Hard invariants <span class="gv">10 / 10 held</span></div>
+          <div class="gaterow"><span class="gi"></span> Rejected writes <span class="gv">5,074 logged</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footnote">
+    <span>● substrate, not orchestrator</span>
+    <span>sqlite-vec 768-dim · LadybugDB graph · SQLite episodic</span>
+    <span>OTEL loopback-only</span>
+    <span>local-first · single user</span>
+  </div>
+</div>
+
+<script>
+  // animated counters (timer-backed end-state so it's robust in capture/hidden contexts)
+  document.querySelectorAll('[data-count]').forEach(el => {
+    const target = +el.dataset.count; const dur = 1400; const t0 = performance.now();
+    let done = false;
+    function tick(now) {
+      const p = Math.min(1, (now - t0) / dur);
+      const e = 1 - Math.pow(1 - p, 3);
+      el.textContent = Math.round(target * e).toLocaleString();
+      if (p < 1) requestAnimationFrame(tick); else done = true;
+    }
+    requestAnimationFrame(tick);
+    setTimeout(() => { if (!done) el.textContent = target.toLocaleString(); }, dur + 250);
+  });
+
+  // growth chart (real per-day data)
+  const days = [
+    ['19',1352],['20',24],['21',73380],['22',123815],['23',186626],
+    ['24',72749],['25',30435],['26',107536],['27',3745],['28',8],['29',29225],['30',29341],['31',134]
+  ];
+  const max = Math.max(...days.map(d => d[1]));
+  const chart = document.getElementById('chart');
+  days.forEach(([d, v]) => {
+    const b = document.createElement('div');
+    b.className = 'b' + (v === max ? ' peak' : '');
+    const h = Math.max(2, (v / max) * 100);
+    b.innerHTML = `<i style="height:${h}%"></i><span class="d">${d}</span>`;
+    b.title = `May ${d}: ${v.toLocaleString()} events`;
+    chart.appendChild(b);
+  });
+
+  // live event stream
+  const stream = document.getElementById('stream');
+  const kinds = [
+    ['add','memory.add','pp-watcher'],['add','memory.add','pp-watcher'],['add','memory.add','pp-watcher'],
+    ['add','memory.add','eights.memory-steward'],['rej','memory.add.rejected','pp-watcher'],
+    ['add','memory.add','pp-watcher'],['evo','evolution.register','miner'],
+    ['add','constitution.get','hydra-supervisor'],['add','memory.add','pp-watcher'],
+    ['add','memory.add','rlm-watcher'],['add','memory.add','pp-watcher'],['add','memory.add','execsuite-watcher']
+  ];
+  const handles = ['ep://','sem://','proc://','meta://'];
+  function ts() { const d = new Date(); return d.toTimeString().slice(0,8); }
+  function rid() { return handles[Math.floor(Math.random()*4)] + Math.random().toString(16).slice(2,8); }
+  function addEvent() {
+    const [cls, name, actor] = kinds[Math.floor(Math.random()*kinds.length)];
+    const row = document.createElement('div');
+    row.className = 'ev';
+    row.innerHTML = `<span class="t">${ts()}</span><span class="k ${cls}">${name}</span><span class="r" style="color:var(--faint)">${rid()}</span><span class="a">${actor}</span>`;
+    stream.prepend(row);
+    while (stream.children.length > 14) stream.lastChild.remove();
+  }
+  for (let i = 0; i < 14; i++) addEvent();
+  setInterval(addEvent, 1100);
+</script>
+</body>
+</html>

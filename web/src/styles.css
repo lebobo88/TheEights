@@ -1,0 +1,915 @@
+/* Verbatim port of the prototype's :root tokens + layout, adapted to the React
+   DOM (Agent-BOM Atlas.html). Visual output must match the prototype exactly. */
+:root {
+  --bg: oklch(0.145 0.018 280);
+  --panel: oklch(0.185 0.02 280 / 0.82);
+  --panel-solid: oklch(0.2 0.022 280);
+  --line: oklch(0.32 0.022 280);
+  --ink: oklch(0.95 0.01 280);
+  --muted: oklch(0.66 0.016 280);
+  --faint: oklch(0.52 0.015 280);
+
+  --c-core: oklch(0.84 0.13 200);
+  --c-cons: oklch(0.8 0.15 158);
+  --c-hub: oklch(0.88 0.07 250);
+  --c-mcp: oklch(0.74 0.15 290);
+  --c-tool: oklch(0.62 0.1 290);
+  --c-eng: oklch(0.74 0.13 250);
+  --c-cog: oklch(0.8 0.12 222);
+  --c-store: oklch(0.8 0.12 195);
+  --c-adapt: oklch(0.8 0.11 175);
+  --c-prov: oklch(0.7 0.08 255);
+  --c-schema: oklch(0.72 0.05 265);
+  --c-mem: oklch(0.82 0.12 198);
+  --c-cell: oklch(0.78 0.13 330);
+  --c-bom: oklch(0.74 0.13 268);
+  --c-res: oklch(0.76 0.15 312);
+  --c-prop: oklch(0.84 0.145 80);
+  --c-gov: oklch(0.72 0.13 255);
+  --c-inv: oklch(0.72 0.17 25);
+  --c-adr: oklch(0.66 0.04 265);
+  --c-frozen: oklch(0.83 0.07 232);
+  --c-env: oklch(0.72 0.14 272);
+  --c-rt: oklch(0.69 0.05 258);
+  --c-cli: oklch(0.8 0.11 162);
+
+  --c-live: oklch(0.8 0.15 158);
+  --c-offline: oklch(0.72 0.13 60);
+}
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+body {
+  background: radial-gradient(1200px 800px at 50% 42%, oklch(0.195 0.028 280) 0%, var(--bg) 72%);
+  color: var(--ink);
+  font-family: "Geist", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+}
+.mono {
+  font-family: "Geist Mono", monospace;
+}
+#graph {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  cursor: grab;
+}
+#graph .gnode {
+  cursor: pointer;
+}
+#graph .glabel {
+  font-family: "Geist", system-ui, sans-serif;
+  paint-order: stroke;
+  stroke: rgba(8, 10, 20, 0.92);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.ov {
+  position: fixed;
+  z-index: 5;
+}
+
+/* top-left brand */
+.brand {
+  top: 20px;
+  left: 22px;
+  pointer-events: none;
+}
+.brand .t {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.brand .t b {
+  color: var(--c-core);
+}
+.brand .s {
+  font-family: "Geist Mono", monospace;
+  font-size: 11px;
+  color: var(--faint);
+  margin-top: 3px;
+}
+
+/* top-right controls */
+.controls {
+  top: 18px;
+  right: 22px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.search-wrap {
+  position: relative;
+}
+#search {
+  width: 220px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-family: "Geist Mono", monospace;
+  font-size: 12px;
+  padding: 9px 12px 9px 30px;
+  border-radius: 9px;
+  backdrop-filter: blur(8px);
+  outline: none;
+}
+#search:focus {
+  border-color: var(--c-core);
+}
+.search-wrap::before {
+  content: "⌕";
+  position: absolute;
+  left: 10px;
+  top: 7px;
+  color: var(--faint);
+  font-size: 14px;
+}
+.btn {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-family: "Geist Mono", monospace;
+  font-size: 11.5px;
+  padding: 9px 13px;
+  border-radius: 9px;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+.btn:hover {
+  color: var(--ink);
+  border-color: var(--faint);
+}
+
+/* lens bar (top center) */
+.lensbar-wrap {
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+}
+#lensBar {
+  display: flex;
+  gap: 2px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 4px;
+  border-radius: 11px;
+  backdrop-filter: blur(8px);
+  max-width: 78vw;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.lens {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-family: "Geist", sans-serif;
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 6px 9px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.lens:hover {
+  color: var(--ink);
+}
+.lens.on {
+  background: oklch(0.84 0.13 200 / 0.16);
+  color: var(--c-core);
+}
+#lensDesc {
+  font-size: 11.5px;
+  color: var(--faint);
+  font-family: "Geist Mono", monospace;
+}
+
+/* legend (bottom-left) */
+.legend-card {
+  bottom: 20px;
+  left: 22px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 13px;
+  backdrop-filter: blur(10px);
+  width: 210px;
+}
+.legend-card .lt {
+  font-size: 9.5px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 9px;
+  display: flex;
+  justify-content: space-between;
+}
+#legend {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 320px;
+  overflow: auto;
+}
+.lrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 11.5px;
+  padding: 4px 5px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.lrow:hover {
+  background: oklch(0.3 0.02 280 / 0.5);
+}
+.lrow.off {
+  opacity: 0.34;
+}
+.lsw {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+.lname {
+  color: var(--ink);
+}
+.lcnt {
+  margin-left: auto;
+  font-family: "Geist Mono", monospace;
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+/* stat bar (bottom center) */
+.statbar {
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: "Geist Mono", monospace;
+  font-size: 11px;
+  color: var(--faint);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 7px 14px;
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.statbar .live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.statbar .live-on {
+  background: var(--c-live);
+  box-shadow: 0 0 6px var(--c-live);
+}
+.statbar .live-off {
+  background: var(--c-offline);
+}
+.statbar .live-tag {
+  color: var(--muted);
+}
+.statbar .sep {
+  color: var(--line);
+}
+
+/* inspector (right) */
+#inspector {
+  position: fixed;
+  z-index: 6;
+  top: 76px;
+  right: 22px;
+  width: 320px;
+  max-height: calc(100vh - 130px);
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px 18px 16px;
+  backdrop-filter: blur(14px);
+  opacity: 0;
+  transform: translateX(12px);
+  pointer-events: none;
+  transition: opacity 0.2s, transform 0.2s;
+}
+#inspector.open {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.ix {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: transparent;
+  border: 0;
+  color: var(--faint);
+  font-size: 14px;
+  cursor: pointer;
+}
+.ix:hover {
+  color: var(--ink);
+}
+.ik {
+  font-family: "Geist Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.kdot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.it {
+  font-size: 18px;
+  font-weight: 600;
+  margin-top: 8px;
+  letter-spacing: -0.015em;
+  line-height: 1.15;
+}
+.ipath {
+  font-family: "Geist Mono", monospace;
+  font-size: 10.5px;
+  color: var(--c-core);
+  margin-top: 7px;
+  word-break: break-all;
+}
+.imeta {
+  font-family: "Geist Mono", monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-top: 5px;
+}
+.ilive {
+  font-family: "Geist Mono", monospace;
+  font-size: 10.5px;
+  color: var(--c-live);
+  margin-top: 5px;
+}
+.idesc {
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin-top: 12px;
+}
+.conn-title {
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin: 16px 0 9px;
+  padding-top: 13px;
+  border-top: 1px solid var(--line);
+}
+/* Live proposal detail (inspector, proposal nodes) */
+.iprop {
+  margin-top: 12px;
+}
+.iprop-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  font-family: "Geist Mono", monospace;
+  font-size: 10.5px;
+  align-items: baseline;
+}
+.iprop-grid > span {
+  color: var(--faint);
+}
+.iprop-grid > b {
+  color: var(--ink);
+  font-weight: 500;
+  word-break: break-word;
+}
+.icode {
+  font-family: "Geist Mono", monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--muted);
+  background: oklch(0.16 0.02 280 / 0.6);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  margin-top: 8px;
+  max-height: 300px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.conn-group {
+  margin-bottom: 11px;
+}
+.conn-h {
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 6px;
+}
+.conn-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.chip {
+  font-family: "Geist Mono", monospace;
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: oklch(0.28 0.02 280 / 0.7);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  cursor: pointer;
+}
+.chip:hover {
+  border-color: var(--c-core);
+  color: var(--c-core);
+}
+
+/* tooltip */
+#tooltip {
+  position: fixed;
+  z-index: 7;
+  pointer-events: none;
+  background: oklch(0.16 0.02 280 / 0.95);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 10px;
+  opacity: 0;
+  transition: opacity 0.12s;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 230px;
+}
+#tooltip b {
+  font-size: 12px;
+  font-weight: 600;
+}
+#tooltip span {
+  font-family: "Geist Mono", monospace;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+/* help hint */
+.hint {
+  bottom: 20px;
+  right: 22px;
+  font-family: "Geist Mono", monospace;
+  font-size: 10.5px;
+  color: var(--faint);
+  text-align: right;
+  line-height: 1.7;
+  pointer-events: none;
+}
+.hint.dim {
+  opacity: 0;
+}
+
+/* ============================================================
+   GOVERNED OPERATOR-WRITE SURFACE — buttons, action footer,
+   HITL Review slide-over, confirm/typed-confirm dialog, toasts.
+   Matches the oklch dark theme + Geist. Added by the
+   atlas-hitl-actions-2026-06-01 Hydra campaign.
+   ============================================================ */
+
+/* --- buttons --- */
+.btn {
+  font-family: "Geist", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 560;
+  letter-spacing: -0.01em;
+  border: 1px solid var(--line);
+  background: var(--panel-solid);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 7px 13px;
+  cursor: pointer;
+  transition: background 0.13s, border-color 0.13s, opacity 0.13s, transform 0.08s;
+}
+.btn:hover:not(:disabled) {
+  border-color: oklch(0.48 0.03 280);
+}
+.btn:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-sm {
+  padding: 5px 10px;
+  font-size: 11.5px;
+}
+.btn-primary {
+  background: color-mix(in oklch, var(--c-cons) 22%, var(--panel-solid));
+  border-color: color-mix(in oklch, var(--c-cons) 55%, var(--line));
+  color: oklch(0.96 0.03 158);
+}
+.btn-primary:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--c-cons) 34%, var(--panel-solid));
+}
+.btn-danger {
+  background: color-mix(in oklch, var(--c-inv) 20%, var(--panel-solid));
+  border-color: color-mix(in oklch, var(--c-inv) 55%, var(--line));
+  color: oklch(0.94 0.05 25);
+}
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--c-inv) 32%, var(--panel-solid));
+}
+.btn-ghost {
+  background: transparent;
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--panel);
+}
+
+/* --- inspector action footer --- */
+.iprop-actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.iprop-frozen {
+  margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: oklch(0.86 0.07 60);
+  background: color-mix(in oklch, var(--c-frozen) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--c-frozen) 32%, var(--line));
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.iprop-frozen code {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+/* --- HITL open button (near the lens bar) --- */
+.hitl-open-btn {
+  position: fixed;
+  top: 16px;
+  right: 18px;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "Geist", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 580;
+  color: var(--ink);
+  background: var(--panel);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 13px;
+  cursor: pointer;
+}
+.hitl-open-btn:hover {
+  border-color: color-mix(in oklch, var(--c-prop) 50%, var(--line));
+}
+.hitl-open-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: oklch(0.18 0.02 80);
+  background: var(--c-prop);
+}
+
+/* --- HITL Review slide-over --- */
+.hitl-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: oklch(0.1 0.02 280 / 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s;
+}
+.hitl-scrim.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.hitl-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 51;
+  width: min(480px, 94vw);
+  height: 100%;
+  background: var(--panel-solid);
+  border-left: 1px solid var(--line);
+  box-shadow: -20px 0 60px oklch(0.1 0.02 280 / 0.5);
+  transform: translateX(100%);
+  transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+}
+.hitl-panel.open {
+  transform: translateX(0);
+}
+.hitl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.hitl-title {
+  font-size: 15px;
+  font-weight: 640;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.hitl-count {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.hitl-offline {
+  margin: 12px 18px 0;
+  font-size: 11.5px;
+  color: oklch(0.84 0.1 60);
+  background: color-mix(in oklch, var(--c-offline) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--c-offline) 30%, var(--line));
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.hitl-filters {
+  display: flex;
+  gap: 14px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.hitl-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.hitl-filters select,
+.dlg-field select,
+.dlg-field input,
+.dlg-field textarea {
+  font-family: "Geist", system-ui, sans-serif;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 6px 8px;
+}
+.hitl-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px 24px;
+}
+.hitl-empty {
+  color: var(--muted);
+  font-size: 11.5px;
+  padding: 14px 6px;
+}
+.hitl-row {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 11px 12px;
+  margin: 8px 0;
+  background: color-mix(in oklch, var(--panel) 60%, transparent);
+}
+.hitl-row.risk-critical {
+  border-color: color-mix(in oklch, var(--c-inv) 45%, var(--line));
+}
+.hitl-row.risk-high {
+  border-color: color-mix(in oklch, var(--c-prop) 40%, var(--line));
+}
+.hitl-rid {
+  font-size: 12px;
+  font-weight: 560;
+  word-break: break-all;
+}
+.hitl-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+  margin: 6px 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.hitl-consumer,
+.hitl-by {
+  color: var(--faint);
+}
+.hitl-just {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  margin-top: 4px;
+  max-height: 4.5em;
+  overflow: hidden;
+}
+.hitl-row-actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 9px;
+  flex-wrap: wrap;
+}
+.hitl-frozen {
+  color: oklch(0.84 0.08 60);
+  background: color-mix(in oklch, var(--c-frozen) 10%, transparent);
+  border: 1px dashed color-mix(in oklch, var(--c-frozen) 30%, var(--line));
+  border-radius: 7px;
+  padding: 6px 9px;
+  font-size: 11px;
+}
+.risk-pill {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--panel-solid);
+  border: 1px solid var(--line);
+}
+.risk-pill.risk-critical {
+  color: oklch(0.9 0.08 25);
+  border-color: color-mix(in oklch, var(--c-inv) 55%, var(--line));
+}
+.risk-pill.risk-high {
+  color: oklch(0.9 0.1 80);
+  border-color: color-mix(in oklch, var(--c-prop) 55%, var(--line));
+}
+.risk-pill.risk-medium {
+  color: oklch(0.88 0.08 222);
+}
+.risk-pill.risk-low {
+  color: oklch(0.88 0.1 158);
+}
+
+/* --- confirm / typed-confirm dialog --- */
+.dlg-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: oklch(0.1 0.02 280 / 0.62);
+  backdrop-filter: blur(3px);
+}
+.dlg {
+  width: min(460px, 92vw);
+  background: var(--panel-solid);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: 0 30px 80px oklch(0.08 0.02 280 / 0.6);
+}
+.dlg-danger {
+  border-color: color-mix(in oklch, var(--c-inv) 45%, var(--line));
+}
+.dlg-title {
+  font-size: 16px;
+  font-weight: 640;
+  margin-bottom: 10px;
+}
+.dlg-line {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.dlg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 12px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.dlg-field code {
+  color: var(--ink);
+}
+.dlg-warn {
+  color: oklch(0.82 0.12 25);
+  font-size: 11px;
+}
+.dlg-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 18px;
+}
+
+/* --- toasts --- */
+#toast-host {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  max-width: 380px;
+}
+.toast {
+  position: relative;
+  background: var(--panel-solid);
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 10px;
+  padding: 11px 30px 11px 13px;
+  box-shadow: 0 12px 36px oklch(0.08 0.02 280 / 0.5);
+  animation: toast-in 0.18s ease-out;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.toast-ok {
+  border-left-color: var(--c-cons);
+}
+.toast-error {
+  border-left-color: var(--c-inv);
+}
+.toast-info {
+  border-left-color: var(--c-hub);
+}
+.toast-title {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.toast-detail {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 3px;
+  line-height: 1.45;
+}
+.toast-audit {
+  font-size: 10.5px;
+  color: var(--faint);
+  margin-top: 5px;
+}
+.toast-x {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: var(--faint);
+  font-size: 12px;
+  cursor: pointer;
+}
+.toast-x:hover {
+  color: var(--ink);
+}

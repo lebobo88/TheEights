@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Runtime: actual bound bridge port, written by server/index.ts on listen so the
+# vite dev proxy can discover it (may roll forward off 8788 if that's busy).
+.atlas-bridge-port

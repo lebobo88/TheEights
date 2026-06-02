@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TheEights — The Substrate Stack</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --paper: oklch(0.972 0.008 92);
+    --paper2: oklch(0.945 0.011 92);
+    --card: oklch(0.99 0.004 92);
+    --ink: oklch(0.24 0.018 60);
+    --muted: oklch(0.48 0.016 60);
+    --faint: oklch(0.62 0.014 60);
+    --line: oklch(0.86 0.012 80);
+    --line2: oklch(0.78 0.014 70);
+    --mcp: oklch(0.52 0.13 255);
+    --mem: oklch(0.50 0.10 200);
+    --evo: oklch(0.50 0.14 300);
+    --gov: oklch(0.52 0.12 25);
+    --aud: oklch(0.46 0.10 150);
+    --accent: oklch(0.55 0.15 45);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    background-image: radial-gradient(oklch(0.78 0.014 70 / 0.4) 0.5px, transparent 0.5px);
+    background-size: 22px 22px;
+    color: var(--ink);
+    font-family: "Geist", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    font-size: 13px;
+  }
+  .mono { font-family: "Geist Mono", monospace; }
+  .serif { font-family: "Newsreader", Georgia, serif; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 40px 48px 56px; }
+
+  header { display: flex; align-items: flex-end; justify-content: space-between; border-bottom: 1.5px solid var(--ink); padding-bottom: 18px; margin-bottom: 8px; }
+  .eyebrow { font-family: "Geist Mono", monospace; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+  h1 { font-family: "Newsreader", serif; font-weight: 500; font-size: 46px; line-height: 0.98; letter-spacing: -0.015em; }
+  h1 em { font-style: italic; color: var(--muted); }
+  .lede { max-width: 360px; text-align: right; font-size: 13px; color: var(--muted); line-height: 1.5; }
+  .lede b { color: var(--ink); font-weight: 600; }
+
+  .figlabel { font-family: "Geist Mono", monospace; font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); margin: 26px 0 14px; }
+
+  /* consumers row */
+  .consumers { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+  .cons { background: var(--card); border: 1px solid var(--line2); border-radius: 9px; padding: 13px 14px; position: relative; }
+  .cons .nm { font-weight: 600; font-size: 13.5px; letter-spacing: -0.01em; }
+  .cons .rl { font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.35; }
+  .cons .mt { font-family: "Geist Mono", monospace; font-size: 10px; color: var(--faint); margin-top: 9px; padding-top: 8px; border-top: 1px dashed var(--line); }
+
+  /* flow arrows */
+  .flow { display: flex; justify-content: center; align-items: center; gap: 10px; margin: 16px 0; color: var(--faint); font-family: "Geist Mono", monospace; font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; }
+  .flow::before, .flow::after { content: ""; height: 1px; width: 90px; background: linear-gradient(90deg, transparent, var(--line2)); }
+  .down { text-align: center; color: var(--mcp); font-size: 18px; line-height: 1; }
+
+  /* mcp bar */
+  .mcpbar { background: var(--ink); color: var(--paper); border-radius: 10px; padding: 16px 22px; display: flex; align-items: center; gap: 20px; }
+  .mcpbar .big { font-family: "Newsreader", serif; font-size: 22px; font-weight: 500; }
+  .mcpbar .ns { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
+  .nschip { font-family: "Geist Mono", monospace; font-size: 10.5px; padding: 3px 8px; border: 1px solid oklch(0.99 0.004 92 / 0.22); border-radius: 5px; color: oklch(0.92 0.01 92); }
+  .mcpbar .tot { font-family: "Geist Mono", monospace; font-size: 12px; color: oklch(0.86 0.01 92); white-space: nowrap; }
+
+  /* middle: engines + stores */
+  .mid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 18px; margin-top: 16px; align-items: stretch; }
+  .panel { background: var(--card); border: 1px solid var(--line2); border-radius: 10px; padding: 16px 18px; }
+  .panel h3 { font-family: "Newsreader", serif; font-size: 17px; font-weight: 600; margin-bottom: 3px; }
+  .panel .sub { font-size: 11.5px; color: var(--muted); margin-bottom: 14px; }
+  .planes { display: grid; gap: 9px; }
+  .plane { display: flex; gap: 12px; align-items: flex-start; padding: 9px 0; border-top: 1px solid var(--line); }
+  .plane:first-child { border-top: 0; padding-top: 2px; }
+  .plane .ic { width: 9px; height: 9px; border-radius: 2px; margin-top: 4px; flex: none; }
+  .plane .pt { font-weight: 600; font-size: 12.5px; }
+  .plane .pd { font-size: 11px; color: var(--muted); line-height: 1.4; margin-top: 2px; }
+
+  .stores { display: grid; gap: 10px; }
+  .store { border: 1px solid var(--line2); border-radius: 8px; padding: 11px 13px; background: var(--paper2); }
+  .store .sh { display: flex; align-items: center; gap: 8px; }
+  .store .si { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .store .sn { font-weight: 600; font-size: 12.5px; }
+  .store .sk { font-family: "Geist Mono", monospace; font-size: 10px; color: var(--faint); margin-left: auto; }
+  .store .sd { font-size: 11px; color: var(--muted); margin-top: 5px; line-height: 1.4; }
+
+  /* footer stats */
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-top: 24px; }
+  .stat { background: var(--card); padding: 14px 16px; }
+  .stat .v { font-family: "Newsreader", serif; font-size: 26px; font-weight: 500; letter-spacing: -0.01em; }
+  .stat .l { font-size: 10.5px; color: var(--muted); margin-top: 3px; }
+  .sig { display: flex; justify-content: space-between; margin-top: 18px; font-family: "Geist Mono", monospace; font-size: 10.5px; color: var(--faint); }
+</style>
+</head>
+<body>
+<div class="wrap" data-screen-label="The Substrate Stack">
+  <header>
+    <div>
+      <div class="eyebrow">Persistent · Governed · Self-evolving</div>
+      <h1 class="serif">The<em>Eights</em><br />a substrate, not an orchestrator.</h1>
+    </div>
+    <p class="lede">One local-first daemon that sits <b>below</b> six agent ecosystems and gives them shared memory, a governance plane, and a gated self-evolution loop — over a single <b>MCP</b> surface.</p>
+  </header>
+
+  <div class="figlabel">Consumers — read &amp; write the substrate, stay fully independent</div>
+  <div class="consumers">
+    <div class="cons"><div class="nm">Hydra</div><div class="rl">LangGraph multi-squad supervisor</div><div class="mt">8 squads</div></div>
+    <div class="cons"><div class="nm">pair-programmer</div><div class="rl">39 sub-agents · 22 teams</div><div class="mt">59 resources</div></div>
+    <div class="cons"><div class="nm">ExecutiveSuite</div><div class="rl">20 C-suite agent roles</div><div class="mt">42 resources</div></div>
+    <div class="cons"><div class="nm">RLM-Creative</div><div class="rl">9-phase pipeline · 14+ siblings</div><div class="mt">1,175 resources</div></div>
+    <div class="cons"><div class="nm">MarketBliss</div><div class="rl">15 specialist marketing agents</div><div class="mt">5 squad packs</div></div>
+    <div class="cons"><div class="nm">AgentSmith</div><div class="rl">Meta-governance antibody</div><div class="mt">proposes only</div></div>
+  </div>
+
+  <div class="flow"><span>MCP calls · stdio</span></div>
+  <div class="down">↓</div>
+
+  <div class="mcpbar">
+    <span class="big serif">MCP surface</span>
+    <div class="ns">
+      <span class="nschip">memory.*</span><span class="nschip">governance.*</span><span class="nschip">evolution.*</span>
+      <span class="nschip">audit.*</span><span class="nschip">constitution.*</span><span class="nschip">identity.*</span>
+      <span class="nschip">hydra.*</span><span class="nschip">squad.*</span><span class="nschip">cells.*</span>
+      <span class="nschip">prompt.*</span><span class="nschip">adapters.*</span><span class="nschip">miner.*</span>
+    </div>
+    <span class="tot">65 tools · 12 namespaces</span>
+  </div>
+
+  <div class="mid">
+    <div class="panel">
+      <h3 class="serif">Three planes, one daemon</h3>
+      <div class="sub">Every call carries an identity envelope: tenant · actor · project · scope · trace.</div>
+      <div class="planes">
+        <div class="plane"><span class="ic" style="background:var(--mem)"></span><div><div class="pt">Hybrid memory</div><div class="pd">Working · episodic · semantic · procedural · meta. Vectors recall, graph reconstructs, SQL audits.</div></div></div>
+        <div class="plane"><span class="ic" style="background:var(--gov)"></span><div><div class="pt">Governance plane</div><div class="pd">SSGM consistency/decay/access gates · LASM defense-in-depth · budget ledger · circuit breaker · HITL.</div></div></div>
+        <div class="plane"><span class="ic" style="background:var(--evo)"></span><div><div class="pt">Gated self-evolution</div><div class="pd">Every prompt, team, rubric &amp; policy is a versioned resource. Low-risk auto-commits; the rest queue for review.</div></div></div>
+        <div class="plane"><span class="ic" style="background:var(--aud)"></span><div><div class="pt">Tamper-evident audit</div><div class="pd">Hash-chained event log → CycloneDX ML-BOM v1.7. Any run is replayable.</div></div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3 class="serif">Storage drivers</h3>
+      <div class="sub">Three access paths, one logical store — all embedded, no external services.</div>
+      <div class="stores">
+        <div class="store"><div class="sh"><span class="si" style="background:var(--mem)"></span><span class="sn">sqlite-vec</span><span class="sk">768-dim</span></div><div class="sd">Vector embeddings for first-pass semantic recall (Ollama nomic-embed-text).</div></div>
+        <div class="store"><div class="sh"><span class="si" style="background:var(--evo)"></span><span class="sn">LadybugDB / Kuzu</span><span class="sk">property graph</span></div><div class="sd">Agent-BOM graph — runs, memories, resources, proposals &amp; their edges.</div></div>
+        <div class="store"><div class="sh"><span class="si" style="background:var(--aud)"></span><span class="sn">SQLite</span><span class="sk">episodic + KV</span></div><div class="sd">Episodic memory, identity, resources, audit. WAL mode, single writer.</div></div>
+        <div class="store"><div class="sh"><span class="si" style="background:var(--gov)"></span><span class="sn">Event log</span><span class="sk">.jsonl</span></div><div class="sd">Append-only hash chain — the tamper-evident source of truth.</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="v">1,284</div><div class="l">evolvable resources</div></div>
+    <div class="stat"><div class="v">658,280</div><div class="l">hash-chained events</div></div>
+    <div class="stat"><div class="v">10</div><div class="l">immutable invariants</div></div>
+    <div class="stat"><div class="v">21</div><div class="l">proposals awaiting HITL</div></div>
+    <div class="stat"><div class="v">43/43</div><div class="l">daemon tests green</div></div>
+  </div>
+
+  <div class="sig">
+    <span>~/.eights/ · local-first · single user</span>
+    <span>ARCHITECTURE v0.3.0 — May 2026</span>
+  </div>
+</div>
+</body>
+</html>

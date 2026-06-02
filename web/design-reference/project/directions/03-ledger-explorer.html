@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TheEights — Memory Ledger Explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: oklch(0.165 0.016 235);
+    --bg2: oklch(0.195 0.018 235);
+    --panel: oklch(0.215 0.02 235);
+    --line: oklch(0.31 0.02 235);
+    --ink: oklch(0.95 0.01 235);
+    --muted: oklch(0.66 0.016 235);
+    --faint: oklch(0.52 0.015 235);
+    --cyan: oklch(0.82 0.13 200);
+    --amber: oklch(0.82 0.145 80);
+    --red: oklch(0.70 0.18 22);
+    --violet: oklch(0.74 0.14 300);
+    --green: oklch(0.80 0.15 158);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--ink); font-family: "Geist", system-ui, sans-serif; -webkit-font-smoothing: antialiased; font-size: 13px; letter-spacing: -0.01em; }
+  .mono { font-family: "Geist Mono", monospace; }
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 22px 26px 30px; }
+
+  .head { display: flex; align-items: flex-end; gap: 18px; border-bottom: 1px solid var(--line); padding-bottom: 16px; margin-bottom: 18px; }
+  .head .ttl { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+  .head .ttl b { color: var(--cyan); }
+  .head .crumbs { font-family: "Geist Mono", monospace; font-size: 11px; color: var(--faint); margin-top: 4px; }
+  .firehose { margin-left: auto; text-align: right; }
+  .firehose .big { font-family: "Geist Mono", monospace; font-size: 30px; font-weight: 600; color: var(--amber); line-height: 1; }
+  .firehose .cap { font-size: 11px; color: var(--muted); margin-top: 5px; max-width: 230px; }
+
+  .grid { display: grid; grid-template-columns: 250px 1fr 270px; gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 15px 16px; }
+  .card h3 { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); margin-bottom: 13px; display: flex; justify-content: space-between; align-items: center; }
+  .card h3 .t { font-family: "Geist Mono", monospace; font-weight: 400; color: var(--faint); }
+  .col { display: flex; flex-direction: column; gap: 16px; }
+
+  /* event-kind bars */
+  .kind { margin-bottom: 12px; }
+  .kind:last-child { margin-bottom: 0; }
+  .kind .kt { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px; }
+  .kind .kn { font-family: "Geist Mono", monospace; font-size: 11px; }
+  .kind .kv { font-family: "Geist Mono", monospace; font-size: 11px; color: var(--muted); }
+  .kbar { height: 7px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+  .kbar > i { display: block; height: 100%; border-radius: 4px; transition: width 1s cubic-bezier(.2,.8,.2,1); }
+
+  /* donut */
+  .donut-wrap { display: flex; align-items: center; gap: 14px; }
+  .legend { display: flex; flex-direction: column; gap: 7px; font-size: 11px; }
+  .legend .li { display: flex; align-items: center; gap: 7px; }
+  .legend .sw { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+  .legend .ln { color: var(--muted); }
+  .legend .lv { margin-left: auto; font-family: "Geist Mono", monospace; color: var(--faint); }
+
+  /* main chart */
+  .chartcard { padding: 16px 18px; }
+  .chartcard .axis { display: flex; justify-content: space-between; font-family: "Geist Mono", monospace; font-size: 9.5px; color: var(--faint); margin-top: 6px; }
+  .legrow { display: flex; gap: 16px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+  .legrow .li { display: flex; align-items: center; gap: 6px; }
+  .legrow .sw { width: 10px; height: 3px; border-radius: 2px; }
+
+  /* actor stacked */
+  .actor { margin-bottom: 11px; }
+  .actor .at { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 11.5px; }
+  .actor .an { font-weight: 500; }
+  .actor .av { font-family: "Geist Mono", monospace; color: var(--muted); font-size: 11px; }
+  .abar { height: 9px; background: var(--bg); border-radius: 5px; overflow: hidden; }
+  .abar > i { display: block; height: 100%; border-radius: 5px; transition: width 1.1s cubic-bezier(.2,.8,.2,1); }
+
+  /* eight cells radial */
+  .cells-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 4px; }
+  .cell { background: var(--bg2); border: 1px solid var(--line); border-radius: 7px; padding: 8px 9px; }
+  .cell .cn { font-size: 11px; font-weight: 500; text-transform: capitalize; display: flex; align-items: center; gap: 6px; }
+  .cell .cd { width: 7px; height: 7px; border-radius: 50%; }
+  .cell .cb { height: 4px; background: var(--bg); border-radius: 3px; margin-top: 7px; overflow: hidden; }
+  .cell .cb > i { display: block; height: 100%; border-radius: 3px; }
+
+  /* memory types row */
+  .types { display: flex; gap: 1px; background: var(--line); border-radius: 7px; overflow: hidden; margin-top: 2px; }
+  .type { background: var(--bg2); padding: 10px 8px; flex: 1; text-align: center; }
+  .type .tn { font-size: 10px; color: var(--muted); text-transform: capitalize; }
+  .type .tv { font-family: "Geist Mono", monospace; font-size: 13px; margin-top: 3px; }
+
+  .pillbar { display: flex; gap: 7px; margin-bottom: 16px; flex-wrap: wrap; }
+  .fpill { font-family: "Geist Mono", monospace; font-size: 10.5px; padding: 5px 11px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--panel); cursor: default; }
+  .fpill.on { background: oklch(0.82 0.13 200 / 0.16); border-color: oklch(0.82 0.13 200 / 0.4); color: var(--cyan); }
+</style>
+</head>
+<body>
+<div class="wrap" data-screen-label="Memory Ledger Explorer">
+  <div class="head">
+    <div>
+      <div class="ttl">Memory <b>Ledger</b> Explorer</div>
+      <div class="crumbs">~/.eights/state.db · events table · 658,280 rows · 2.2 GB · jsonl mirror 418 MB</div>
+    </div>
+    <div class="firehose">
+      <div class="big">96%</div>
+      <div class="cap">of the entire ledger is <span class="mono" style="color:var(--ink)">pp-watcher</span> mirroring every pair-programmer attempt as a <span class="mono" style="color:var(--cyan)">memory.add</span> — a bursty firehose, not a leak.</div>
+    </div>
+  </div>
+
+  <div class="pillbar">
+    <span class="fpill on">all events</span>
+    <span class="fpill">memory.add</span>
+    <span class="fpill">rejected</span>
+    <span class="fpill">evolution.register</span>
+    <span class="fpill">constitution.get</span>
+    <span class="fpill">miner.run</span>
+    <span class="fpill" style="margin-left:auto">range · May 19–31</span>
+  </div>
+
+  <div class="grid">
+    <!-- LEFT -->
+    <div class="col">
+      <div class="card">
+        <h3>Event kinds <span class="t">658,280</span></h3>
+        <div class="kind"><div class="kt"><span class="kn">memory.add</span><span class="kv">650,317 · 98.8%</span></div><div class="kbar"><i style="width:98.8%;background:var(--cyan)"></i></div></div>
+        <div class="kind"><div class="kt"><span class="kn">memory.add.rejected</span><span class="kv">5,074 · 0.8%</span></div><div class="kbar"><i style="width:14%;background:var(--red)"></i></div></div>
+        <div class="kind"><div class="kt"><span class="kn">evolution.register</span><span class="kv">1,597 · 0.2%</span></div><div class="kbar"><i style="width:7%;background:var(--violet)"></i></div></div>
+        <div class="kind"><div class="kt"><span class="kn">constitution.get</span><span class="kv">864</span></div><div class="kbar"><i style="width:4%;background:var(--green)"></i></div></div>
+        <div class="kind"><div class="kt"><span class="kn">miner.run</span><span class="kv">263</span></div><div class="kbar"><i style="width:2.5%;background:var(--amber)"></i></div></div>
+        <div class="kind"><div class="kt"><span class="kn">everything else</span><span class="kv">~165</span></div><div class="kbar"><i style="width:1.5%;background:var(--faint)"></i></div></div>
+      </div>
+      <div class="card">
+        <h3>Memory types <span class="t">CoALA</span></h3>
+        <div class="donut-wrap">
+          <svg width="92" height="92" viewBox="0 0 42 42" id="donut">
+            <circle cx="21" cy="21" r="15.9" fill="none" stroke="var(--bg)" stroke-width="6"></circle>
+          </svg>
+          <div class="legend">
+            <div class="li"><span class="sw" style="background:var(--cyan)"></span><span class="ln">episodic</span><span class="lv">58%</span></div>
+            <div class="li"><span class="sw" style="background:var(--violet)"></span><span class="ln">semantic</span><span class="lv">22%</span></div>
+            <div class="li"><span class="sw" style="background:var(--green)"></span><span class="ln">procedural</span><span class="lv">12%</span></div>
+            <div class="li"><span class="sw" style="background:var(--amber)"></span><span class="ln">meta</span><span class="lv">6%</span></div>
+            <div class="li"><span class="sw" style="background:var(--faint)"></span><span class="ln">working</span><span class="lv">2%</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CENTER -->
+    <div class="col">
+      <div class="card chartcard">
+        <h3>Ledger growth · memory.add per day <span class="t">volume tracks pp activity</span></h3>
+        <svg id="growth" width="100%" height="190" viewBox="0 0 760 190" preserveAspectRatio="none" style="overflow:visible"></svg>
+        <div class="axis"><span>05-19</span><span>05-21</span><span>05-23 · peak 186,626</span><span>05-26</span><span>05-29</span><span>05-31</span></div>
+        <div class="legrow">
+          <div class="li"><span class="sw" style="background:var(--cyan)"></span> daily writes</div>
+          <div class="li"><span class="sw" style="background:var(--amber)"></span> peak build day</div>
+          <div class="li" style="margin-left:auto;color:var(--faint)">near-zero when pp idle — 8 events on 05-28</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Writers · by actor <span class="t">reads record 0 events</span></h3>
+        <div class="actor"><div class="at"><span class="an">pp-watcher</span><span class="av">631,591 · 96%</span></div><div class="abar"><i style="width:96%;background:var(--cyan)"></i></div></div>
+        <div class="actor"><div class="at"><span class="an">eights.memory-steward</span><span class="av">18,102 · 2.8%</span></div><div class="abar"><i style="width:18%;background:var(--green)"></i></div></div>
+        <div class="actor"><div class="at"><span class="an">miner</span><span class="av">5,939 · 0.9%</span></div><div class="abar"><i style="width:9%;background:var(--amber)"></i></div></div>
+        <div class="actor"><div class="at"><span class="an">all others (mixed)</span><span class="av">~2,600 · 0.4%</span></div><div class="abar"><i style="width:5%;background:var(--faint)"></i></div></div>
+        <div class="types">
+          <div class="type"><div class="tv">working</div><div class="tn">LRU + spill</div></div>
+          <div class="type"><div class="tv">episodic</div><div class="tn">SQLite + jsonl</div></div>
+          <div class="type"><div class="tv">semantic</div><div class="tn">vec + graph</div></div>
+          <div class="type"><div class="tv">procedural</div><div class="tn">resource store</div></div>
+          <div class="type"><div class="tv">meta</div><div class="tn">KV</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT -->
+    <div class="col">
+      <div class="card">
+        <h3>Eight Cells <span class="t">semantic axis</span></h3>
+        <div class="cells-grid" id="cells"></div>
+      </div>
+      <div class="card">
+        <h3>Root cause <span class="t">audit-growth · 05-31</span></h3>
+        <p style="font-size:11.5px;color:var(--muted);line-height:1.55">The <span class="mono" style="color:var(--ink)">PpWatcher</span> polls <span class="mono">~/.pair-programmer/state.db</span> every 5s and mirrors each attempt into eights memory. Slow boot was <span class="mono">verifyChain()</span> scaling with ledger size.</p>
+        <div style="margin-top:11px;padding-top:11px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px;font-size:11.5px">
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">boot time</span><span class="mono"><span style="color:var(--faint);text-decoration:line-through">6–26s</span> → <span style="color:var(--green)">0.8s</span></span></div>
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">fix</span><span class="mono" style="color:var(--cyan)">tail-only verify</span></div>
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">chain status</span><span class="mono" style="color:var(--green)">clean ✓</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // event-kind & actor bars already inline-width; animate them from 0 (timer-backed)
+  document.querySelectorAll('.kbar > i, .abar > i').forEach(el => {
+    const w = el.style.width; el.style.width = '0';
+    setTimeout(() => { el.style.width = w; }, 60);
+  });
+
+  // donut (memory types)
+  const donut = document.getElementById('donut');
+  const segs = [['var(--cyan)',58],['var(--violet)',22],['var(--green)',12],['var(--amber)',6],['var(--faint)',2]];
+  let off = 25;
+  segs.forEach(([c, pct]) => {
+    const circ = document.createElementNS('http://www.w3.org/2000/svg','circle');
+    circ.setAttribute('cx','21'); circ.setAttribute('cy','21'); circ.setAttribute('r','15.9');
+    circ.setAttribute('fill','none'); circ.setAttribute('stroke', c); circ.setAttribute('stroke-width','6');
+    circ.setAttribute('stroke-dasharray', `${pct} ${100-pct}`);
+    circ.setAttribute('stroke-dashoffset', off);
+    circ.setAttribute('transform','rotate(-90 21 21)');
+    donut.appendChild(circ);
+    off -= pct;
+  });
+
+  // growth area+line chart
+  const data = [1352,24,73380,123815,186626,72749,30435,107536,3745,8,29225,29341,134];
+  const W = 760, H = 190, max = Math.max(...data);
+  const x = i => (i / (data.length - 1)) * W;
+  const y = v => H - (v / max) * (H - 14) - 4;
+  const peakIdx = data.indexOf(max);
+  let line = '', area = `M0 ${H} `;
+  data.forEach((v, i) => { line += (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1) + ' '; area += 'L' + x(i).toFixed(1) + ' ' + y(v).toFixed(1) + ' '; });
+  area += `L${W} ${H} Z`;
+  const svg = document.getElementById('growth');
+  svg.innerHTML = `
+    <defs><linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="oklch(0.82 0.13 200 / 0.45)"/><stop offset="1" stop-color="oklch(0.82 0.13 200 / 0)"/>
+    </linearGradient></defs>
+    ${[0.25,0.5,0.75].map(g => `<line x1="0" y1="${H*g}" x2="${W}" y2="${H*g}" stroke="var(--line)" stroke-dasharray="2 4"/>`).join('')}
+    <path d="${area}" fill="url(#ag)"/>
+    <path d="${line}" fill="none" stroke="var(--cyan)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" pathLength="1" style="stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1.6s ease forwards"/>
+    <circle cx="${x(peakIdx)}" cy="${y(max)}" r="4" fill="var(--amber)"/>
+    <circle cx="${x(peakIdx)}" cy="${y(max)}" r="9" fill="none" stroke="var(--amber)" stroke-width="1" opacity="0.5"/>
+  `;
+  const st = document.createElement('style'); st.textContent = '@keyframes draw{to{stroke-dashoffset:0}}'; document.head.appendChild(st);
+
+  // eight cells
+  const cellData = [['vision',74,'oklch(0.80 0.13 280)'],['context',96,'oklch(0.82 0.13 200)'],['triggers',61,'oklch(0.80 0.15 158)'],['influence',48,'oklch(0.82 0.145 80)'],['risk',82,'oklch(0.70 0.18 22)'],['focus',88,'oklch(0.78 0.13 230)'],['constraints',55,'oklch(0.74 0.14 300)'],['delight',33,'oklch(0.80 0.13 340)']];
+  const cells = document.getElementById('cells');
+  cellData.forEach(([n, v, c]) => {
+    const d = document.createElement('div');
+    d.className = 'cell';
+    d.innerHTML = `<div class="cn"><span class="cd" style="background:${c}"></span>${n}</div><div class="cb"><i style="width:${v}%;background:${c}"></i></div>`;
+    cells.appendChild(d);
+  });
+  document.querySelectorAll('.cell .cb > i').forEach(el => { const w = el.style.width; el.style.width='0'; setTimeout(()=>{ el.style.width=w; }, 60); });
+</script>
+</body>
+</html>

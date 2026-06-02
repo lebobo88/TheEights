@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TheEights — Agent-BOM Atlas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: oklch(0.145 0.018 280);
+    --panel: oklch(0.185 0.02 280 / 0.82);
+    --panel-solid: oklch(0.20 0.022 280);
+    --line: oklch(0.32 0.022 280);
+    --ink: oklch(0.95 0.01 280);
+    --muted: oklch(0.66 0.016 280);
+    --faint: oklch(0.52 0.015 280);
+
+    --c-core:   oklch(0.84 0.13 200);
+    --c-cons:   oklch(0.80 0.15 158);
+    --c-hub:    oklch(0.88 0.07 250);
+    --c-mcp:    oklch(0.74 0.15 290);
+    --c-tool:   oklch(0.62 0.10 290);
+    --c-eng:    oklch(0.74 0.13 250);
+    --c-cog:    oklch(0.80 0.12 222);
+    --c-store:  oklch(0.80 0.12 195);
+    --c-adapt:  oklch(0.80 0.11 175);
+    --c-prov:   oklch(0.70 0.08 255);
+    --c-schema: oklch(0.72 0.05 265);
+    --c-mem:    oklch(0.82 0.12 198);
+    --c-cell:   oklch(0.78 0.13 330);
+    --c-bom:    oklch(0.74 0.13 268);
+    --c-res:    oklch(0.76 0.15 312);
+    --c-prop:   oklch(0.84 0.145 80);
+    --c-gov:    oklch(0.72 0.13 255);
+    --c-inv:    oklch(0.72 0.17 25);
+    --c-adr:    oklch(0.66 0.04 265);
+    --c-frozen: oklch(0.83 0.07 232);
+    --c-env:    oklch(0.72 0.14 272);
+    --c-rt:     oklch(0.69 0.05 258);
+    --c-cli:    oklch(0.80 0.11 162);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: radial-gradient(1200px 800px at 50% 42%, oklch(0.195 0.028 280) 0%, var(--bg) 72%);
+    color: var(--ink);
+    font-family: "Geist", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    font-size: 13px; letter-spacing: -0.01em;
+  }
+  .mono { font-family: "Geist Mono", monospace; }
+  #graph { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: grab; }
+  #graph .gnode { cursor: pointer; }
+  #graph .glabel { font-family: "Geist", system-ui, sans-serif; paint-order: stroke; stroke: rgba(8,10,20,0.92); stroke-width: 3px; stroke-linejoin: round; pointer-events: none; -webkit-user-select: none; user-select: none; }
+
+  .ov { position: fixed; z-index: 5; }
+
+  /* top-left brand */
+  .brand { top: 20px; left: 22px; pointer-events: none; }
+  .brand .t { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
+  .brand .t b { color: var(--c-core); }
+  .brand .s { font-family: "Geist Mono", monospace; font-size: 11px; color: var(--faint); margin-top: 3px; }
+
+  /* top-right controls */
+  .controls { top: 18px; right: 22px; display: flex; gap: 8px; align-items: center; }
+  .search-wrap { position: relative; }
+  #search {
+    width: 220px; background: var(--panel); border: 1px solid var(--line); color: var(--ink);
+    font-family: "Geist Mono", monospace; font-size: 12px; padding: 9px 12px 9px 30px; border-radius: 9px;
+    backdrop-filter: blur(8px); outline: none;
+  }
+  #search:focus { border-color: var(--c-core); }
+  .search-wrap::before { content: "⌕"; position: absolute; left: 10px; top: 7px; color: var(--faint); font-size: 14px; }
+  .btn {
+    background: var(--panel); border: 1px solid var(--line); color: var(--muted);
+    font-family: "Geist Mono", monospace; font-size: 11.5px; padding: 9px 13px; border-radius: 9px;
+    cursor: pointer; backdrop-filter: blur(8px);
+  }
+  .btn:hover { color: var(--ink); border-color: var(--faint); }
+
+  /* lens bar (top center) */
+  .lensbar-wrap { top: 18px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 7px; }
+  #lensBar {
+    display: flex; gap: 2px; background: var(--panel); border: 1px solid var(--line);
+    padding: 4px; border-radius: 11px; backdrop-filter: blur(8px); max-width: 78vw; flex-wrap: wrap; justify-content: center;
+  }
+  .lens {
+    background: transparent; border: 0; color: var(--muted); font-family: "Geist", sans-serif;
+    font-size: 11.5px; font-weight: 500; padding: 6px 9px; border-radius: 7px; cursor: pointer; white-space: nowrap;
+  }
+  .lens:hover { color: var(--ink); }
+  .lens.on { background: oklch(0.84 0.13 200 / 0.16); color: var(--c-core); }
+  #lensDesc { font-size: 11.5px; color: var(--faint); font-family: "Geist Mono", monospace; }
+
+  /* legend (bottom-left) */
+  .legend-card { bottom: 20px; left: 22px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px 13px; backdrop-filter: blur(10px); width: 210px; }
+  .legend-card .lt { font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--faint); margin-bottom: 9px; display: flex; justify-content: space-between; }
+  #legend { display: flex; flex-direction: column; gap: 1px; max-height: 320px; overflow: auto; }
+  .lrow { display: flex; align-items: center; gap: 9px; font-size: 11.5px; padding: 4px 5px; border-radius: 6px; cursor: pointer; }
+  .lrow:hover { background: oklch(0.30 0.02 280 / 0.5); }
+  .lrow.off { opacity: 0.34; }
+  .lsw { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .lname { color: var(--ink); }
+  .lcnt { margin-left: auto; font-family: "Geist Mono", monospace; font-size: 10.5px; color: var(--faint); }
+
+  /* stat bar (bottom center) */
+  .statbar { bottom: 24px; left: 50%; transform: translateX(-50%); font-family: "Geist Mono", monospace;
+    font-size: 11px; color: var(--faint); background: var(--panel); border: 1px solid var(--line);
+    padding: 7px 14px; border-radius: 999px; backdrop-filter: blur(8px); }
+
+  /* inspector (right) */
+  #inspector {
+    position: fixed; z-index: 6; top: 76px; right: 22px; width: 320px; max-height: calc(100vh - 130px); overflow: auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 18px 16px;
+    backdrop-filter: blur(14px); opacity: 0; transform: translateX(12px); pointer-events: none; transition: opacity .2s, transform .2s;
+  }
+  #inspector.open { opacity: 1; transform: none; pointer-events: auto; }
+  .ix { position: absolute; top: 12px; right: 12px; background: transparent; border: 0; color: var(--faint); font-size: 14px; cursor: pointer; }
+  .ix:hover { color: var(--ink); }
+  .ik { font-family: "Geist Mono", monospace; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+  .kdot { width: 9px; height: 9px; border-radius: 50%; }
+  .it { font-size: 18px; font-weight: 600; margin-top: 8px; letter-spacing: -0.015em; line-height: 1.15; }
+  .ipath { font-family: "Geist Mono", monospace; font-size: 10.5px; color: var(--c-core); margin-top: 7px; word-break: break-all; }
+  .imeta { font-family: "Geist Mono", monospace; font-size: 10.5px; color: var(--muted); margin-top: 5px; }
+  .idesc { font-size: 12.5px; color: var(--muted); line-height: 1.5; margin-top: 12px; }
+  .conn-title { font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); margin: 16px 0 9px; padding-top: 13px; border-top: 1px solid var(--line); }
+  .conn-group { margin-bottom: 11px; }
+  .conn-h { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+  .conn-list { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip { font-family: "Geist Mono", monospace; font-size: 10px; padding: 3px 8px; border-radius: 6px;
+    background: oklch(0.28 0.02 280 / 0.7); border: 1px solid var(--line); color: var(--ink); cursor: pointer; }
+  .chip:hover { border-color: var(--c-core); color: var(--c-core); }
+
+  /* tooltip */
+  #tooltip { position: fixed; z-index: 7; pointer-events: none; background: oklch(0.16 0.02 280 / 0.95);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; opacity: 0; transition: opacity .12s;
+    display: flex; flex-direction: column; gap: 2px; max-width: 230px; }
+  #tooltip b { font-size: 12px; font-weight: 600; }
+  #tooltip span { font-family: "Geist Mono", monospace; font-size: 10px; color: var(--muted); }
+
+  /* help hint */
+  .hint { bottom: 20px; right: 22px; font-family: "Geist Mono", monospace; font-size: 10.5px; color: var(--faint);
+    text-align: right; line-height: 1.7; pointer-events: none; }
+  #inspector.open ~ .hint { opacity: 0; }
+</style>
+</head>
+<body>
+  <svg id="graph"></svg>
+
+  <div class="ov brand">
+    <div class="t">The<b>Eights</b> · Agent-BOM Atlas</div>
+    <div class="s">every module in the codebase, as one graph · v0.3.0</div>
+  </div>
+
+  <div class="ov lensbar-wrap">
+    <div id="lensBar"></div>
+    <div id="lensDesc"></div>
+  </div>
+
+  <div class="ov controls">
+    <div class="search-wrap"><input id="search" placeholder="search modules…" autocomplete="off" /></div>
+    <button class="btn" id="reset">reset view</button>
+  </div>
+
+  <div class="ov legend-card">
+    <div class="lt"><span>Node groups</span><span>click to filter</span></div>
+    <div id="legend"></div>
+  </div>
+
+  <div class="ov statbar"><span id="stat"></span></div>
+
+  <div id="inspector"></div>
+  <div id="tooltip"></div>
+
+  <div class="ov hint">drag node to pull · scroll to zoom · drag bg to pan<br />click a node to inspect · click groups to filter</div>
+
+  <script src="atlas/data.js"></script>
+  <script src="atlas/sim.js"></script>
+  <script src="atlas/app.js"></script>
+</body>
+</html>

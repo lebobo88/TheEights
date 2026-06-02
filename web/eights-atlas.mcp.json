@@ -1,0 +1,38 @@
+{
+  "mcpServers": {
+    "eights-atlas": {
+      "command": "node",
+      "args": ["--import", "tsx", "server/index.ts"],
+      "cwd": "C:/AiAppDeployments/TheEights/web",
+      "env": {
+        "EIGHTS_ATLAS_BRIDGE_PORT": "8788"
+      },
+      "type": "stdio",
+      "description": "Living Agent-BOM Atlas — read-only MCP bridge consumer for TheEights. Localhost-only (127.0.0.1) GET-only HTTP facade over the existing daemon MCP stdio boundary. Fixed read-only envelope (actor eights-atlas, project TheEights, domain infra, empty scope). Hard read-only tool whitelist + forbidden-verb denylist. No daemon/src modification, no new daemon surface; every proxied read is audited.",
+      "readOnly": true,
+      "bind": "127.0.0.1",
+      "envelope": {
+        "actor_id": "eights-atlas",
+        "project_id": "TheEights",
+        "domain": "infra",
+        "scope": [],
+        "tenant_id": "local"
+      },
+      "toolWhitelist": [
+        "audit.trace",
+        "audit.verify",
+        "audit.bom",
+        "evolution.list_resources",
+        "evolution.list_pending",
+        "evolution.get_resource",
+        "governance.hitl.list",
+        "cells.distribution",
+        "cells.query",
+        "hydra.envelope.query",
+        "hydra.handoff.list",
+        "squad.list",
+        "prompt.list"
+      ]
+    }
+  }
+}

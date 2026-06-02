@@ -68,6 +68,23 @@ The name evokes (a) the 8 reference-doc layers (LASM), (b) the 8 chambers of a t
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
+> **Consumer surfaces beside the CLI.** The `web/` package (Living Agent-BOM Atlas) is a
+> consumer-style sibling of `daemon/` and `cli/`. Like the CLI it is **just another MCP
+> client over the existing stdio boundary** — it adds no new daemon surface and makes no
+> changes under `daemon/src/`. Its **read** path is read-only by construction (fixed
+> `eights-atlas` envelope, empty scope, read whitelist + denylist, loopback + `GET`-only).
+> As of the `atlas-hitl-actions-2026-06-01` campaign it ALSO has a **governed
+> operator-write path** (Atlas is no longer purely read-only): a *separate*, CSRF-gated,
+> POST-only path with a distinct, minimal allowlist of EXACTLY
+> `{evolution.approve, evolution.reject, evolution.rollback}` and a distinct operator
+> envelope (actor `operator-rob`, domain `governance`, minimal hard-coded scope). It lets
+> the operator Approve / Reject / Rollback self-evolution proposals from the browser by
+> invoking ONLY the governed `eights.evolution.*` tools — so the Evolution Engine + Policy
+> Engine still enforce policy/HITL/frozen-refusal/write-back/audit (frozen/critical
+> resources are refused server-side pending an operator `unfreeze`). The operator action is
+> the operator-signed override Hard Invariant #5 requires; every action is audited under
+> `operator-rob`. The §12 Hard Invariants are unchanged. See `web/README.md`.
+
 ### Why this stack on Windows / local
 
 - **SQLite** — single file, WAL mode, transactional. Already proven in pair-programmer.

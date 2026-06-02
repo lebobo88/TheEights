@@ -98,5 +98,28 @@ Live deployment numbers: **1,284 evolvable resources** registered (pp: 59, hydra
 - Cloud / multi-tenant deployment (architecture supports it; not built). Note: cloud LLM/embedding providers (OpenAI, DeepSeek, AuthHub) are opt-in in v1 behind `EIGHTS_ALLOW_CLOUD_PROVIDERS=1` — this is provider routing, not multi-tenant deployment.
 - Pgvector driver (only sqlite-vec in v1)
 - Graph DB swap to Neo4j / Memgraph (only LadybugDB / Kuzu)
-- Web UI (CLI + Claude Code skills only)
 - Auto-evolution beyond `risk_class=low`
+
+## Phase 7 — Web UI: the Living Agent-BOM Atlas (IN PROGRESS)
+
+A read-only web observability UI now IS in scope, as the **Living Agent-BOM Atlas**
+(new top-level `web/` package, sibling to `daemon/` and `cli/`). It supersedes the
+prior "Web UI — out of scope" line.
+
+- **Frontend** — React + Vite + TypeScript (strict, ESM, Node 20). A pixel-faithful
+  port of the design prototype: a force-directed SVG graph of the entire codebase
+  (~250 nodes, 11 lenses), with drag/zoom/pan/search/inspector/legend-filter. The
+  curated structural graph is the static skeleton.
+- **Read-only MCP bridge** (`web/server/`) — a localhost-only Node consumer that is
+  JUST ANOTHER MCP CLIENT (reuses the `cli/src/mcp-client.ts` shape). It hydrates the
+  Atlas's observability layer with LIVE data (header counts, pending proposals + HITL
+  queue, per-consumer resource totals, chain-verify status, Eight-Cells distribution,
+  Hydra envelopes/handoffs, live edge pulses from recent audit events). Graceful
+  "live: offline" fallback to baked static values when the daemon is unreachable.
+- **Read-only by construction** — fixed `eights-atlas` envelope (empty scope,
+  invariant #1), a hard 13-tool read whitelist + forbidden-verb denylist (no
+  write/commit/approve/charge), 127.0.0.1 bind, GET-only. No `daemon/src/` change, no
+  new daemon surface; every proxied read is still audited (invariant #3).
+
+**Status:** scaffold + faithful port + bridge code complete and built; live wiring
+gated on operator HITL sign-off (`live_surface_signoff`). See `web/README.md`.

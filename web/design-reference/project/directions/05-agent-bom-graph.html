@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TheEights — Agent-BOM Graph</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: oklch(0.145 0.02 280);
+    --bg2: oklch(0.18 0.022 280);
+    --line: oklch(0.30 0.022 280);
+    --ink: oklch(0.95 0.01 280);
+    --muted: oklch(0.66 0.016 280);
+    --faint: oklch(0.52 0.015 280);
+    --core: oklch(0.82 0.13 200);
+    --run: oklch(0.78 0.13 230);
+    --mem: oklch(0.80 0.12 195);
+    --res: oklch(0.74 0.15 300);
+    --prop: oklch(0.83 0.145 80);
+    --cons: oklch(0.80 0.15 158);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background:
+      radial-gradient(1100px 700px at 50% 45%, oklch(0.20 0.03 280) 0%, var(--bg) 70%);
+    color: var(--ink);
+    font-family: "Geist", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    font-size: 13px;
+    letter-spacing: -0.01em;
+  }
+  .mono { font-family: "Geist Mono", monospace; }
+  .stage { position: relative; width: 100vw; height: 100vh; }
+  svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* overlay header */
+  .ov { position: absolute; z-index: 5; pointer-events: none; }
+  .topL { top: 22px; left: 26px; }
+  .topL .ttl { font-size: 19px; font-weight: 700; letter-spacing: -0.02em; }
+  .topL .ttl b { color: var(--core); }
+  .topL .sub { font-family: "Geist Mono", monospace; font-size: 11px; color: var(--faint); margin-top: 4px; }
+  .topR { top: 22px; right: 26px; text-align: right; display: flex; gap: 8px; }
+  .pill { font-family: "Geist Mono", monospace; font-size: 11px; padding: 5px 11px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: oklch(0.18 0.022 280 / 0.7); backdrop-filter: blur(4px); }
+  .pill b { color: var(--core); }
+
+  /* legend */
+  .legend { bottom: 22px; left: 26px; display: flex; flex-direction: column; gap: 8px; background: oklch(0.18 0.022 280 / 0.65); backdrop-filter: blur(5px); border: 1px solid var(--line); border-radius: 10px; padding: 13px 15px; }
+  .legend .lt { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); margin-bottom: 2px; }
+  .legend .li { display: flex; align-items: center; gap: 9px; font-size: 11.5px; }
+  .legend .sw { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .legend .lc { margin-left: auto; font-family: "Geist Mono", monospace; font-size: 10.5px; color: var(--faint); }
+
+  /* inspector */
+  .inspector {
+    position: absolute; z-index: 6; top: 78px; right: 26px; width: 290px;
+    background: oklch(0.18 0.022 280 / 0.8); backdrop-filter: blur(8px);
+    border: 1px solid var(--line); border-radius: 12px; padding: 16px 17px;
+    transition: opacity .25s, transform .25s;
+  }
+  .inspector .ik { font-family: "Geist Mono", monospace; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
+  .inspector .it { font-size: 16px; font-weight: 600; margin-top: 6px; letter-spacing: -0.01em; }
+  .inspector .id { font-family: "Geist Mono", monospace; font-size: 10.5px; color: var(--muted); margin-top: 3px; }
+  .inspector .row { display: flex; justify-content: space-between; font-size: 12px; padding: 8px 0; border-top: 1px solid var(--line); margin-top: 4px; }
+  .inspector .row:first-of-type { margin-top: 12px; }
+  .inspector .row .k { color: var(--muted); }
+  .inspector .row .v { font-family: "Geist Mono", monospace; color: var(--ink); }
+  .inspector .hint { font-size: 11px; color: var(--faint); margin-top: 12px; line-height: 1.4; }
+  .badge { display: inline-block; font-family: "Geist Mono", monospace; font-size: 10px; padding: 2px 7px; border-radius: 4px; }
+
+  .node-label { font: 500 11px "Geist", sans-serif; fill: var(--ink); pointer-events: none; paint-order: stroke; stroke: oklch(0.145 0.02 280); stroke-width: 3px; }
+  .node-label.small { font-size: 9.5px; fill: var(--muted); }
+  circle.node { cursor: pointer; transition: r .15s; }
+  circle.node:hover { stroke: #fff; stroke-width: 1.5; }
+</style>
+</head>
+<body>
+<div class="stage" data-screen-label="Agent-BOM Graph">
+  <svg id="g" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice">
+    <defs>
+      <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+        <feGaussianBlur stdDeviation="4" result="b"/>
+        <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+      <radialGradient id="coreg"><stop offset="0" stop-color="oklch(0.92 0.10 200)"/><stop offset="1" stop-color="oklch(0.70 0.14 210)"/></radialGradient>
+    </defs>
+    <g id="edges"></g>
+    <g id="pulses"></g>
+    <g id="nodes"></g>
+  </svg>
+
+  <div class="ov topL">
+    <div class="ttl">The<b>Eights</b> · Agent-BOM</div>
+    <div class="sub">hash-chained audit graph · LadybugDB · replayable from any Run</div>
+  </div>
+  <div class="ov topR" style="pointer-events:auto">
+    <span class="pill"><b>658,280</b> events</span>
+    <span class="pill"><b>1,288</b> ML-BOM components</span>
+    <span class="pill">chain ✓</span>
+  </div>
+
+  <div class="inspector" id="inspector">
+    <div class="ik">node · TheEights core</div>
+    <div class="it" id="i-title">eights-daemon</div>
+    <div class="id" id="i-sub">substrate · MCP stdio · v0.3.0</div>
+    <div id="i-rows">
+      <div class="row"><span class="k">connected consumers</span><span class="v">6</span></div>
+      <div class="row"><span class="k">MCP tools</span><span class="v">65</span></div>
+      <div class="row"><span class="k">evolvable resources</span><span class="v">1,284</span></div>
+    </div>
+    <div class="hint" id="i-hint">Click any node to trace its edges. Pulses are live <span class="mono">memory.add</span> writes flowing through the audit chain.</div>
+  </div>
+
+  <div class="ov legend">
+    <span class="lt">Agent-BOM node types</span>
+    <div class="li"><span class="sw" style="background:var(--cons)"></span> Consumer <span class="lc">6</span></div>
+    <div class="li"><span class="sw" style="background:var(--run)"></span> Run <span class="lc">producers</span></div>
+    <div class="li"><span class="sw" style="background:var(--mem)"></span> Memory <span class="lc">658k</span></div>
+    <div class="li"><span class="sw" style="background:var(--res)"></span> Resource <span class="lc">1,284</span></div>
+    <div class="li"><span class="sw" style="background:var(--prop)"></span> Proposal · HITL <span class="lc">21</span></div>
+  </div>
+</div>
+
+<script>
+  const NS = 'http://www.w3.org/2000/svg';
+  const colors = { core:'url(#coreg)', cons:'var(--cons)', run:'var(--run)', mem:'var(--mem)', res:'var(--res)', prop:'var(--prop)' };
+  const cx = 720, cy = 430;
+
+  // ---- node definitions ----
+  const nodes = [
+    { id:'core', type:'core', label:'TheEights', x:cx, y:cy, r:30,
+      title:'eights-daemon', sub:'substrate · MCP stdio · v0.3.0',
+      rows:[['connected consumers','6'],['MCP tools','65'],['evolvable resources','1,284']],
+      hint:'The substrate. Every consumer reads & writes through this single MCP surface.' },
+  ];
+
+  // consumers on a ring
+  const consumers = [
+    ['pair-programmer','pp', 631591, '59 resources · 39 agents'],
+    ['Hydra','hy', 0, '8 squads · LangGraph'],
+    ['ExecutiveSuite','es', 0, '42 resources · 20 roles'],
+    ['RLM-Creative','rlm', 0, '1,175 resources'],
+    ['MarketBliss','mb', 0, '15 agents · 5 packs'],
+    ['AgentSmith','as', 0, 'proposes · cannot commit'],
+  ];
+  consumers.forEach((c, i) => {
+    const a = -Math.PI/2 + i * (Math.PI*2/consumers.length);
+    const R = 320;
+    nodes.push({ id:'cons-'+c[1], type:'cons', label:c[0], x:cx + Math.cos(a)*R*1.5, y:cy + Math.sin(a)*R*0.85, r: c[1]==='pp'?20:13,
+      title:c[0], sub:c[3],
+      rows:[['event share', c[1]==='pp'?'96% · 631,591':'< 4%'],['role','consumer']],
+      hint: c[1]==='pp' ? 'pp-watcher mirrors every attempt as memory.add — 96% of the ledger.' : 'Reads & writes the substrate, stays fully independent.' });
+  });
+
+  // run nodes (near pp)
+  const ppNode = nodes.find(n => n.id==='cons-pp');
+  const runs = [];
+  for (let i=0;i<5;i++){
+    const a = -Math.PI/2 + i*0.5 + 1.2;
+    const x = ppNode.x + Math.cos(a)*120, y = ppNode.y + Math.sin(a)*95;
+    const id = 'run-'+i;
+    runs.push(id);
+    nodes.push({ id, type:'run', label:i===0?'Run':'', x, y, r:7,
+      title:'Run #'+(8800+i*37), sub:'pair-programmer · finalize_run',
+      rows:[['produced','artifacts + verdict'],['wrote','memory.add'],['scored','3.x → 4.x']],
+      hint:'(:Run)-[:PRODUCED]->(:Artifact), (:Run)-[:WROTE]->(:Memory)' });
+  }
+
+  // memory cluster
+  const mems = [];
+  for (let i=0;i<14;i++){
+    const a = Math.random()*Math.PI*2, R = 110 + Math.random()*120;
+    const x = cx + Math.cos(a)*R*1.15, y = cy + Math.sin(a)*R*0.7;
+    const id='mem-'+i; mems.push(id);
+    const handles=['ep://','sem://','proc://','meta://'];
+    nodes.push({ id, type:'mem', label:'', x, y, r:4+Math.random()*3,
+      title:handles[i%4]+Math.random().toString(16).slice(2,8), sub:['episodic','semantic','procedural','meta'][i%4]+' memory',
+      rows:[['confidence',(0.5+Math.random()*0.5).toFixed(2)],['cell',['context','risk','focus','vision'][i%4]],['path','hybrid']],
+      hint:'A memory node — vector-indexed, graph-linked, episodically logged.' });
+  }
+
+  // resource cluster
+  const resPts = [];
+  for (let i=0;i<8;i++){
+    const a = -Math.PI/2 + i*0.42 - 2.4;
+    const x = cx + Math.cos(a)*360, y = cy + Math.sin(a)*235 - 30;
+    const id='res-'+i; resPts.push(id);
+    const kinds=['prompt','team','rubric','workflow','squad','policy','schema','tool'];
+    nodes.push({ id, type:'res', label:i===0?'Resource':'', x, y, r:7,
+      title:'resource:'+kinds[i], sub:kinds[i]+' · versioned',
+      rows:[['risk_class',['low','medium','high','critical'][i%4]],['policy',['auto','hitl-only','hitl-only','frozen'][i%4]],['versions',(1+i%5)+'']],
+      hint:'Every prompt, team, rubric, policy is a versioned resource (RSPL).' });
+  }
+
+  // proposal (HITL) cluster
+  const props = [];
+  for (let i=0;i<4;i++){
+    const a = Math.PI/2 + i*0.34 - 0.5;
+    const x = cx + Math.cos(a)*330, y = cy + Math.sin(a)*250 + 60;
+    const id='prop-'+i; props.push(id);
+    const names=['rlm/cms-content-block-registry','hydra/squad.engineering.routing','pp/team.feature-team-tdd','execsuite/rubric.ma-dossier'];
+    nodes.push({ id, type:'prop', label:'', x, y, r:8,
+      title:names[i], sub:'EvolutionProposal · pending',
+      rows:[['status','pending HITL'],['risk',['medium','high','medium','high'][i]],['eval Δ',['+0.04','+0.12','+0.08','+0.05'][i]]],
+      hint:'Awaiting human-in-the-loop review. 21 pending · 0 approved · 0 committed.' });
+  }
+
+  // ---- edges ----
+  const edges = [];
+  nodes.filter(n=>n.type==='cons').forEach(n => edges.push(['core', n.id, 'main']));
+  runs.forEach(r => edges.push(['cons-pp', r, 'thin']));
+  runs.forEach((r,i) => edges.push([r, mems[i*2 % mems.length], 'thin']));
+  mems.forEach(m => edges.push(['core', m, 'mem']));
+  resPts.forEach(r => edges.push(['core', r, 'res']));
+  props.forEach((p,i) => edges.push([resPts[i], p, 'prop']));
+  props.forEach(p => edges.push([p, 'core', 'prop']));
+  // a few memory->memory links
+  for (let i=0;i<6;i++) edges.push([mems[i], mems[(i+3)%mems.length], 'link']);
+
+  const byId = Object.fromEntries(nodes.map(n=>[n.id,n]));
+  const gE = document.getElementById('edges'), gN = document.getElementById('nodes'), gP = document.getElementById('pulses');
+
+  function path(a, b) {
+    const A=byId[a], B=byId[b];
+    const mx=(A.x+B.x)/2, my=(A.y+B.y)/2;
+    const dx=B.x-A.x, dy=B.y-A.y;
+    const curve=0.12;
+    const cxp=mx - dy*curve, cyp=my + dx*curve;
+    return `M${A.x} ${A.y} Q${cxp} ${cyp} ${B.x} ${B.y}`;
+  }
+  const edgeEls = [];
+  edges.forEach(([a,b,kind]) => {
+    const p = document.createElementNS(NS,'path');
+    p.setAttribute('d', path(a,b));
+    p.setAttribute('fill','none');
+    const style = {
+      main:['var(--line)',1.4,0.9], mem:['var(--mem)',0.8,0.18], res:['var(--res)',1,0.3],
+      prop:['var(--prop)',1.1,0.4], thin:['var(--run)',0.8,0.3], link:['var(--mem)',0.7,0.14]
+    }[kind];
+    p.setAttribute('stroke', style[0]); p.setAttribute('stroke-width', style[1]); p.setAttribute('opacity', style[2]);
+    p.dataset.a=a; p.dataset.b=b;
+    gE.appendChild(p);
+    edgeEls.push({el:p, a, b, kind});
+  });
+
+  // nodes
+  nodes.forEach(n => {
+    const c = document.createElementNS(NS,'circle');
+    c.setAttribute('class','node'); c.setAttribute('cx',n.x); c.setAttribute('cy',n.y); c.setAttribute('r',n.r);
+    c.setAttribute('fill', colors[n.type]);
+    if (n.type==='core' || n.type==='prop' || n.id==='cons-pp') c.setAttribute('filter','url(#glow)');
+    c.dataset.id=n.id;
+    c.addEventListener('click', () => select(n.id));
+    c.addEventListener('mouseenter', () => select(n.id));
+    gN.appendChild(c);
+    if (n.label) {
+      const t = document.createElementNS(NS,'text');
+      t.setAttribute('class','node-label' + (n.type==='run'||n.type==='res' ? ' small':''));
+      t.setAttribute('x', n.x); t.setAttribute('y', n.y - n.r - 7); t.setAttribute('text-anchor','middle');
+      t.textContent = n.label;
+      gN.appendChild(t);
+    }
+  });
+
+  // floating animation (subtle)
+  const floatNodes = nodes.filter(n => n.type==='mem' || n.type==='run');
+  floatNodes.forEach(n => { n.phase = Math.random()*Math.PI*2; n.amp = 3 + Math.random()*4; n.bx=n.x; n.by=n.y; });
+  function animate(t) {
+    floatNodes.forEach(n => {
+      n.x = n.bx + Math.sin(t/1400 + n.phase) * n.amp;
+      n.y = n.by + Math.cos(t/1600 + n.phase) * n.amp;
+      const c = gN.querySelector(`circle[data-id="${n.id}"]`);
+      if (c){ c.setAttribute('cx', n.x); c.setAttribute('cy', n.y); }
+    });
+    edgeEls.forEach(e => { if (byId[e.a].type==='mem'||byId[e.b].type==='mem'||byId[e.a].type==='run') e.el.setAttribute('d', path(e.a,e.b)); });
+    requestAnimationFrame(animate);
+  }
+  requestAnimationFrame(animate);
+
+  // pulses along main/mem edges (live memory.add writes)
+  function spawnPulse() {
+    const candidates = edgeEls.filter(e => ['main','mem','thin','prop'].includes(e.kind));
+    const e = candidates[Math.floor(Math.random()*candidates.length)];
+    const len = e.el.getTotalLength();
+    const dot = document.createElementNS(NS,'circle');
+    const col = e.kind==='prop' ? 'var(--prop)' : 'var(--core)';
+    dot.setAttribute('r', e.kind==='main'?2.6:1.8); dot.setAttribute('fill', col); dot.setAttribute('filter','url(#glow)');
+    gP.appendChild(dot);
+    const dur = 900 + Math.random()*700; const t0 = performance.now();
+    function step(now){
+      const p = (now - t0)/dur;
+      if (p>=1){ dot.remove(); return; }
+      const pt = e.el.getPointAtLength(p*len);
+      dot.setAttribute('cx', pt.x); dot.setAttribute('cy', pt.y);
+      dot.setAttribute('opacity', Math.sin(p*Math.PI));
+      requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+  setInterval(spawnPulse, 280);
+
+  // selection / inspector
+  const insp = { t:document.getElementById('i-title'), s:document.getElementById('i-sub'), r:document.getElementById('i-rows'), h:document.getElementById('i-hint'), k:document.querySelector('.inspector .ik') };
+  const typeName = { core:'TheEights core', cons:'Consumer', run:'Run', mem:'Memory', res:'Resource', prop:'Proposal · HITL' };
+  function select(id) {
+    const n = byId[id];
+    insp.k.textContent = 'node · ' + typeName[n.type];
+    insp.t.textContent = n.title;
+    insp.s.textContent = n.sub;
+    insp.r.innerHTML = n.rows.map(([k,v]) => `<div class="row"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('');
+    insp.h.innerHTML = n.hint;
+    // highlight edges
+    edgeEls.forEach(e => {
+      const on = e.a===id || e.b===id;
+      e.el.setAttribute('opacity', on ? 0.95 : ({main:0.18,mem:0.06,res:0.1,prop:0.12,thin:0.1,link:0.05}[e.kind]));
+      if (on) e.el.setAttribute('stroke-width', (+e.el.getAttribute('stroke-width'))+0.4);
+    });
+    gN.querySelectorAll('circle').forEach(c => c.setAttribute('opacity', (c.dataset.id===id || isNeighbor(id, c.dataset.id)) ? 1 : 0.35));
+  }
+  function isNeighbor(a,b){ return edges.some(([x,y]) => (x===a&&y===b)||(x===b&&y===a)); }
+  document.getElementById('g').addEventListener('click', (e) => {
+    if (e.target.tagName !== 'circle') {
+      edgeEls.forEach(x => { x.el.setAttribute('opacity', {main:0.9,mem:0.18,res:0.3,prop:0.4,thin:0.3,link:0.14}[x.kind]); });
+      gN.querySelectorAll('circle').forEach(c => c.setAttribute('opacity', 1));
+    }
+  });
+</script>
+</body>
+</html>

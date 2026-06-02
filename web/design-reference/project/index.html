@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TheEights — 5 UI Directions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: oklch(0.95 0.004 250);
+    --card: oklch(0.995 0.002 250);
+    --ink: oklch(0.24 0.012 250);
+    --muted: oklch(0.50 0.012 250);
+    --faint: oklch(0.64 0.01 250);
+    --line: oklch(0.88 0.006 250);
+    --accent: oklch(0.55 0.13 255);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--ink); font-family: "Geist", system-ui, sans-serif; -webkit-font-smoothing: antialiased; font-size: 14px; }
+  .mono { font-family: "Geist Mono", monospace; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 44px 40px 64px; }
+
+  header { border-bottom: 1px solid var(--line); padding-bottom: 26px; margin-bottom: 32px; }
+  .eyebrow { font-family: "Geist Mono", monospace; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 14px; }
+  h1 { font-size: 34px; font-weight: 600; letter-spacing: -0.025em; line-height: 1.05; max-width: 760px; }
+  h1 b { color: var(--accent); }
+  .intro { display: grid; grid-template-columns: 1.4fr 1fr; gap: 40px; margin-top: 20px; align-items: end; }
+  .intro p { font-size: 14px; color: var(--muted); line-height: 1.6; max-width: 580px; }
+  .intro p b { color: var(--ink); font-weight: 600; }
+  .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .fact { background: var(--card); padding: 11px 14px; }
+  .fact .v { font-family: "Geist Mono", monospace; font-size: 17px; font-weight: 500; letter-spacing: -0.01em; }
+  .fact .l { font-size: 10.5px; color: var(--faint); margin-top: 2px; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; }
+  .card-out { display: flex; flex-direction: column; }
+  .card-out.feature { grid-column: 1 / -1; }
+  .clabel { display: flex; align-items: baseline; gap: 11px; margin-bottom: 11px; }
+  .clabel .num { font-family: "Geist Mono", monospace; font-size: 12px; color: var(--accent); font-weight: 500; }
+  .clabel .nm { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+  .clabel .tags { margin-left: auto; display: flex; gap: 6px; }
+  .tag { font-family: "Geist Mono", monospace; font-size: 10px; padding: 3px 8px; border-radius: 5px; background: oklch(0.91 0.006 250); color: var(--muted); }
+  .tag.facet { background: oklch(0.55 0.13 255 / 0.1); color: var(--accent); }
+
+  .preview {
+    position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+    box-shadow: 0 1px 2px oklch(0.2 0.02 250 / 0.04), 0 8px 24px oklch(0.2 0.02 250 / 0.06);
+    cursor: pointer; transition: box-shadow .2s, transform .2s;
+  }
+  .preview:hover { box-shadow: 0 2px 4px oklch(0.2 0.02 250 / 0.06), 0 14px 40px oklch(0.2 0.02 250 / 0.12); transform: translateY(-2px); }
+  .preview .scaler { position: absolute; top: 0; left: 0; transform-origin: top left; pointer-events: none; }
+  .preview iframe { border: 0; background: #fff; }
+  .preview .open {
+    position: absolute; bottom: 12px; right: 12px; z-index: 3;
+    font-family: "Geist Mono", monospace; font-size: 11px; padding: 7px 13px; border-radius: 8px;
+    background: oklch(0.18 0.012 250 / 0.88); color: #fff; backdrop-filter: blur(4px);
+    display: flex; align-items: center; gap: 6px; opacity: 0; transition: opacity .2s;
+  }
+  .preview:hover .open { opacity: 1; }
+  .desc { font-size: 12.5px; color: var(--muted); line-height: 1.5; margin-top: 12px; max-width: 560px; }
+  .desc b { color: var(--ink); font-weight: 600; }
+  .footnote { margin-top: 44px; padding-top: 20px; border-top: 1px solid var(--line); font-family: "Geist Mono", monospace; font-size: 11px; color: var(--faint); display: flex; gap: 22px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Best of 5 · concept directions</div>
+    <h1>Five ways to see <b>TheEights</b> — the memory &amp; governance substrate beneath your agents.</h1>
+    <div class="intro">
+      <p>TheEights is a local-first daemon that sits <b>below</b> six agent ecosystems (Hydra, pair-programmer, ExecutiveSuite, RLM-Creative, MarketBliss, AgentSmith) and gives them one shared <b>hybrid memory</b>, a <b>governance plane</b>, a <b>gated self-evolution loop</b>, and a <b>tamper-evident audit ledger</b> — all over a single MCP surface. Each direction below centers a different facet of what's actually going on inside it. <b>Click any frame to open it full-screen.</b></p>
+      <div class="facts">
+        <div class="fact"><div class="v">658,280</div><div class="l">hash-chained events</div></div>
+        <div class="fact"><div class="v">1,284</div><div class="l">evolvable resources</div></div>
+        <div class="fact"><div class="v">21</div><div class="l">proposals awaiting HITL</div></div>
+        <div class="fact"><div class="v">65 · 12</div><div class="l">MCP tools · namespaces</div></div>
+      </div>
+    </div>
+  </header>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="footnote">
+    <span>eights-daemon v0.3.0</span>
+    <span>data sourced verbatim from the repo + audit-growth report (2026-05-31)</span>
+    <span>substrate, not orchestrator</span>
+  </div>
+</div>
+
+<script>
+  const directions = [
+    { n:'01', file:'directions/01-mission-control.html', name:'Mission Control', w:1440, h:960, feature:true,
+      facet:'live ops', aes:'dark console',
+      desc:'The by-the-book <b>operator console</b>. KPI ribbon, the substrate stack L7→L1, a live <b>tail -f</b> event stream, ledger-growth bars, the HITL queue, and every governance gate at a glance. This is the daily driver.' },
+    { n:'02', file:'directions/02-substrate-stack.html', name:'The Substrate Stack', w:1280, h:1000,
+      facet:'topology', aes:'editorial poster',
+      desc:'An <b>explainer poster</b> — consumers on top, data flowing down through the MCP surface into three planes and four stores. Newsreader serif on warm paper. For onboarding, docs, the README hero.' },
+    { n:'03', file:'directions/03-ledger-explorer.html', name:'Memory Ledger Explorer', w:1440, h:900,
+      facet:'the memory', aes:'data-viz',
+      desc:'The literal answer to "what\u2019s going on with the memory." The <b>658k-event ledger</b> dissected: growth-over-time with the May 23 peak, the <b>96% pp-watcher firehose</b>, event-kind &amp; actor breakdowns, memory types, the Eight Cells axis.' },
+    { n:'04', file:'directions/04-blueprint.html', name:'Blueprint / Schematic', w:1440, h:1010,
+      facet:'self-evolution', aes:'engineering drawing',
+      desc:'The <b>gated evolution loop</b> as a drafting sheet — propose \u2192 evaluate \u2192 commit | HITL queue, risk-class routing, SSGM gates, and the 10 immutable invariants as spec notes. Distinctive, technical, frame-worthy.' },
+    { n:'05', file:'Agent-BOM Atlas.html', name:'Living Agent-BOM Atlas', w:1440, h:900,
+      facet:'whole codebase', aes:'interactive graph',
+      desc:'The expanded direction: <b>every module in the codebase</b> as one explorable force graph — 186 nodes (18 engines, 4 stores, 12 MCP namespaces + 57 tools, cognitive services, adapters, providers, schemas, memory types, Eight Cells, Agent-BOM nodes, resources, the HITL queue, invariants &amp; ADRs). Nine <b>lenses</b>, search, drag/zoom, and a click-through inspector with real source paths.' },
+  ];
+
+  const grid = document.getElementById('grid');
+  directions.forEach(d => {
+    const out = document.createElement('div');
+    out.className = 'card-out' + (d.feature ? ' feature' : '');
+    out.innerHTML = `
+      <div class="clabel">
+        <span class="num">${d.n}</span>
+        <span class="nm">${d.name}</span>
+        <span class="tags"><span class="tag facet">${d.facet}</span><span class="tag">${d.aes}</span></span>
+      </div>
+      <div class="preview" data-file="${d.file}">
+        <div class="scaler"><iframe src="${d.file}" width="${d.w}" height="${d.h}" scrolling="no" loading="lazy"></iframe></div>
+        <div class="open">open full-screen ↗</div>
+      </div>
+      <p class="desc">${d.desc}</p>`;
+    grid.appendChild(out);
+
+    const prev = out.querySelector('.preview');
+    const scaler = out.querySelector('.scaler');
+    prev.addEventListener('click', () => { window.open(d.file, '_blank'); });
+
+    function fit() {
+      const cw = prev.clientWidth;
+      const scale = cw / d.w;
+      scaler.style.transform = `scale(${scale})`;
+      prev.style.height = (d.h * scale) + 'px';
+    }
+    requestAnimationFrame(fit);
+    window.addEventListener('resize', fit);
+    // refit after iframe loads (fonts can shift layout height perception, but fixed h keeps it stable)
+    out.querySelector('iframe').addEventListener('load', fit);
+  });
+</script>
+</body>
+</html>
