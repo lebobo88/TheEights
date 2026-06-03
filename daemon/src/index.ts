@@ -21,6 +21,7 @@ import { EvolutionEngine } from "./engines/evolution.js";
 import { PpWatcher } from "./engines/pp-watcher.js";
 import { ExecSuiteWatcher } from "./engines/execsuite-watcher.js";
 import { RlmWatcher } from "./engines/rlm-watcher.js";
+import { XeniaWatcher } from "./engines/xenia-watcher.js";
 import { Miner } from "./engines/miner.js";
 import { BomEngine } from "./engines/bom.js";
 import { ConstitutionEngine } from "./engines/constitution.js";
@@ -38,6 +39,7 @@ import { loadProviderConfig, createEmbedder, createCompleter } from "./providers
 import { PpBridge } from "./adapters/pp-bridge.js";
 import { ExecSuiteBridge } from "./adapters/execsuite-bridge.js";
 import { RlmBridge } from "./adapters/rlm-bridge.js";
+import { XeniaBridge } from "./adapters/xenia-bridge.js";
 import { WriteRouter } from "./engines/writeback.js";
 import { PpWriteBridge } from "./engines/writers/pp-writer.js";
 import { HydraWriteBridge } from "./engines/writers/hydra-writer.js";
@@ -47,6 +49,7 @@ import { PpRegistrar } from "./engines/registrars/pp-registrar.js";
 import { HydraRegistrar } from "./engines/registrars/hydra-registrar.js";
 import { ExecSuiteRegistrar } from "./engines/registrars/execsuite-registrar.js";
 import { RlmRegistrar } from "./engines/registrars/rlm-registrar.js";
+import { XeniaRegistrar } from "./engines/registrars/xenia-registrar.js";
 import { EvalRegistry } from "./engines/eval/registry.js";
 import { LlmJudgeEval } from "./engines/eval/llm-judge.js";
 import { YamlStructuralEval } from "./engines/eval/yaml-structural.js";
@@ -197,7 +200,7 @@ async function main(): Promise<void> {
   const memory = new MemoryEngine(sql, vec, graph, audit, embedder, policy);
   const identity = new IdentityEngine(sql);
   identity.registerActor("eights.system", "system");
-  for (const p of ["TheEights", "pair-programmer", "Hydra", "ExecutiveSuite"]) {
+  for (const p of ["TheEights", "pair-programmer", "Hydra", "ExecutiveSuite", "xenia"]) {
     identity.registerProject(p, "infra", ["public"]);
   }
 
@@ -257,6 +260,8 @@ async function main(): Promise<void> {
   const execWatcher = new ExecSuiteWatcher(sql, execBridge, log);
   const rlmBridge = new RlmBridge(memory);
   const rlmWatcher = new RlmWatcher(sql, rlmBridge, log);
+  const xeniaBridge = new XeniaBridge(memory);
+  const xeniaWatcher = new XeniaWatcher(sql, xeniaBridge, log);
 
   // D2c — escape hatch. EIGHTS_DISABLE_WATCHERS=1 skips all watchers + scheduled
   // jobs entirely. Use when a watcher's consumer DB is wedged or when an
@@ -274,6 +279,7 @@ async function main(): Promise<void> {
     hydra: new HydraRegistrar(evolution, log),
     exec: new ExecSuiteRegistrar(evolution, log),
     rlm: new RlmRegistrar(evolution, log),
+    xenia: new XeniaRegistrar(evolution, log),
   };
 
   const miner = new Miner(sql, memory, audit, log, evolution, completer);
@@ -294,6 +300,7 @@ async function main(): Promise<void> {
     ppWatcher.start();
     execWatcher.start();
     rlmWatcher.start();
+    xeniaWatcher.start();
     miner.startScheduled();
     auditVerifier.start();
   };
@@ -304,7 +311,7 @@ async function main(): Promise<void> {
     ...registerAuditTools(audit, sql),
     ...registerGovernanceTools(policy, governance, redaction),
     ...registerEvolutionTools(evolution),
-    ...registerAdapterTools({ pp: ppWatcher, exec: execWatcher, rlm: rlmWatcher, miner, bom, registrars }),
+    ...registerAdapterTools({ pp: ppWatcher, exec: execWatcher, rlm: rlmWatcher, xenia: xeniaWatcher, miner, bom, registrars }),
     ...registerConstitutionTools(constitution),
     ...registerHydraTools(hydraEngine),
     ...registerSquadTools(evolution),
@@ -337,7 +344,7 @@ async function main(): Promise<void> {
   const shutdown = async (sig: string): Promise<void> => {
     log.info({ sig }, "shutting down");
     if (checkpointTimer) { clearInterval(checkpointTimer); checkpointTimer = null; }
-    ppWatcher.stop(); execWatcher.stop(); rlmWatcher.stop(); miner.stop();
+    ppWatcher.stop(); execWatcher.stop(); rlmWatcher.stop(); xeniaWatcher.stop(); miner.stop();
     stewardJob.stop(); costJob.stop(); iolausJob.stop(); auditVerifier.stop(); otel.stop();
     try { await graph.close(); } catch { /* ignore */ }
     // Best-effort TRUNCATE on the way out: shrinks the -wal file to zero when no

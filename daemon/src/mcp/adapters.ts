@@ -3,12 +3,14 @@ import { Envelope } from "../schemas/envelope.js";
 import type { PpWatcher } from "../engines/pp-watcher.js";
 import type { ExecSuiteWatcher } from "../engines/execsuite-watcher.js";
 import type { RlmWatcher } from "../engines/rlm-watcher.js";
+import type { XeniaWatcher } from "../engines/xenia-watcher.js";
 import type { Miner } from "../engines/miner.js";
 import type { BomEngine } from "../engines/bom.js";
 import type { PpRegistrar } from "../engines/registrars/pp-registrar.js";
 import type { HydraRegistrar } from "../engines/registrars/hydra-registrar.js";
 import type { ExecSuiteRegistrar } from "../engines/registrars/execsuite-registrar.js";
 import type { RlmRegistrar } from "../engines/registrars/rlm-registrar.js";
+import type { XeniaRegistrar } from "../engines/registrars/xenia-registrar.js";
 
 const Empty = z.object({});
 const BomArgs = z.object({ project_id: z.string().optional(), since: z.string().optional() });
@@ -16,10 +18,11 @@ const RegisterEnv = z.object({ envelope: Envelope });
 const RegisterRlmArgs = z.object({ envelope: Envelope, sibling: z.string().optional() });
 
 export function registerAdapterTools(opts: {
-  pp: PpWatcher; exec: ExecSuiteWatcher; rlm: RlmWatcher;
+  pp: PpWatcher; exec: ExecSuiteWatcher; rlm: RlmWatcher; xenia: XeniaWatcher;
   miner: Miner; bom: BomEngine;
   registrars: {
     pp: PpRegistrar; hydra: HydraRegistrar; exec: ExecSuiteRegistrar; rlm: RlmRegistrar;
+    xenia: XeniaRegistrar;
   };
 }) {
   return {
@@ -37,6 +40,11 @@ export function registerAdapterTools(opts: {
     "eights.adapters.rlm.stop":          { description: "Stop RLM watcher.",                  schema: Empty,        handler: async () => { opts.rlm.stop(); return { stopped: true }; } },
     "eights.adapters.rlm.sync_now":      { description: "Force one RLM cycle.",               schema: Empty,        handler: async () => opts.rlm.syncNow() },
     "eights.adapters.rlm.register_now":  { description: "Bulk-register RLM family artifacts.", schema: RegisterRlmArgs, handler: async (a: z.infer<typeof RegisterRlmArgs>) => opts.registrars.rlm.run(a.envelope, a.sibling) },
+
+    "eights.adapters.xenia.start":       { description: "Start Xenia hearth events.jsonl watcher.", schema: Empty,   handler: async () => { opts.xenia.start(); return { started: true }; } },
+    "eights.adapters.xenia.stop":        { description: "Stop Xenia watcher.",                schema: Empty,        handler: async () => { opts.xenia.stop(); return { stopped: true }; } },
+    "eights.adapters.xenia.sync_now":    { description: "Force one Xenia cycle.",             schema: Empty,        handler: async () => opts.xenia.syncNow() },
+    "eights.adapters.xenia.register_now":{ description: "Bulk-register Xenia customer-support artifacts as RSPL resources.", schema: RegisterEnv, handler: async (a: z.infer<typeof RegisterEnv>) => opts.registrars.xenia.run(a.envelope) },
 
     "eights.adapters.hydra.register_now":{ description: "Bulk-register Hydra squad artifacts.", schema: RegisterEnv, handler: async (a: z.infer<typeof RegisterEnv>) => opts.registrars.hydra.run(a.envelope) },
 
