@@ -51,20 +51,29 @@ export class XeniaBridge {
     const eventId = String(evt.event_id ?? `noid_${ts}`);
     const cells = CELLS_BY_KIND[kind] ?? ["influence"];
 
+    // Pack memory contract: ticket/severity/category always; customer:<hash>
+    // when the event carries the opaque ref; outcome:delight on wins
+    // (Soteria's dui convention — resolved tickets count as delight).
+    const scope = [
+      "project:xenia",
+      "domain:customer-support",
+      `severity:${severity}`,
+      `ticket:${ticket}`,
+      `category:${category}`,
+      `kind:${kind}`,
+      `event:${eventId}`,
+    ];
+    const customerRef = typeof evt.customer_ref === "string" ? evt.customer_ref : "";
+    if (/^customer:[0-9a-f]{6,}$/i.test(customerRef)) scope.push(customerRef.toLowerCase());
+    const outcome = String(evt.outcome ?? "");
+    if (outcome === "delight" || kind === "xenia.ticket_resolved") scope.push("outcome:delight");
+
     const env: Envelope = {
       tenant_id: "local",
       actor_id: "xenia-watcher",
       project_id: "xenia",
       domain: "customer-support",
-      scope: [
-        "project:xenia",
-        "domain:customer-support",
-        `severity:${severity}`,
-        `ticket:${ticket}`,
-        `category:${category}`,
-        `kind:${kind}`,
-        `event:${eventId}`,
-      ],
+      scope,
       trace_id: `xenia_${ticket}_${ts}`,
     };
 

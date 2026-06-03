@@ -115,7 +115,10 @@ export class XeniaWatcher {
 
       const seen = this.getSeen();
       const seenSet = new Set(seen);
-      for (const line of complete.split(/\r?\n/).filter(Boolean)) {
+      for (const rawLine of complete.split(/\r?\n/).filter(Boolean)) {
+        // Strip a UTF-8 BOM (Windows PowerShell 5.1 writes one on file
+        // creation) so the first line of a fresh events.jsonl still parses.
+        const line = rawLine.replace(/^﻿/, "");
         try {
           const evt = JSON.parse(line) as Record<string, unknown>;
           const eid = String(evt.event_id ?? "");

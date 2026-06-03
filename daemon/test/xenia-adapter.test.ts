@@ -141,6 +141,7 @@ describe("xenia-watcher + bridge — event ingestion, cells, dedupe, redaction",
     appendFileSync(eventsPath(), JSON.stringify({
       event_id: "x-2", ts: "2026-06-03T00:05:00Z", kind: "xenia.ticket_resolved",
       agent: "hestia", phase: "tickets", ticket_id: "TICKET-001", severity: "P2", category: "billing",
+      customer_ref: "customer:a1b2c3d4", outcome: "delight",
     }) + "\n");
     const r = await watcher.syncNow();
     expect(r.events).toBe(2);
@@ -149,6 +150,9 @@ describe("xenia-watcher + bridge — event ingestion, cells, dedupe, redaction",
     expect(added[1]!.cell).toBe("delight");   // resolved -> Dui
     expect(added[0]!.scopes).toContain("ticket:TICKET-001");
     expect(added[0]!.scopes).toContain("domain:customer-support");
+    // Pack memory contract: customer:<hash> + outcome:delight scopes ride wins.
+    expect(added[1]!.scopes).toContain("customer:a1b2c3d4");
+    expect(added[1]!.scopes).toContain("outcome:delight");
   });
 
   it("escalation writes TWO memories (risk + influence)", async () => {
