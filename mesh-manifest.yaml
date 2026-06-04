@@ -1,0 +1,92 @@
+apiVersion: agentmesh/v1
+kind: SiblingManifest
+
+metadata:
+  id: theeights
+  displayName: "TheEights Memory and Governance"
+  version: "5.0.0"
+  description: "Memory, audit, identity, constitution, governance, and evolution for the enterprise AI mesh."
+  # backendsKey: the dict key meshd manages in ~/.hydra/backends.json.
+  # The real gateway uses key "eights" while metadata.id is "theeights" (no underscores allowed).
+  # Amendment 2026-06-04: added to reconcile manifest id with gateway registry key.
+  backendsKey: "eights"
+
+runtime:
+  type: node20-ts
+  entrypoint: "dist/index.js"
+  cwd: "C:/AiAppDeployments/TheEights"
+  healthProbe:
+    type: mcp-tool-call
+    # eights.constitution.get: cheap no-args read returning constitution snapshot.
+    # Replaced eights.audit.verify (which walks the chain ~20s) per panel mandate
+    # verdict_8x1XjJZpZ4 absorption #2 — 2026-06-04.
+    # Source: TheEights/daemon/src/mcp/constitution.ts — registerConstitutionTools()
+    tool: "eights.constitution.get"
+    intervalMs: 15000
+    timeoutMs: 5000
+    failureThreshold: 3
+
+mcp:
+  endpoint:
+    type: stdio
+  # REAL tool names discovered from TheEights/daemon/src/mcp/ source files.
+  # Includes ALL tools required by audit.exportTool and governance.attestTool.
+  tools:
+    # --- audit namespace (audit.ts) ---
+    - "eights.audit.trace"
+    - "eights.audit.verify"
+    # --- constitution namespace (constitution.ts) ---
+    - "eights.constitution.get"
+    - "eights.constitution.attest"
+    - "eights.constitution.propose_amendment"
+    # --- memory namespace (memory.ts) ---
+    - "eights.memory.add"
+    - "eights.memory.search"
+    - "eights.memory.get"
+    - "eights.memory.resolve"
+    - "eights.memory.resolve_batch"
+    - "eights.memory.link"
+    # --- identity namespace (identity.ts) ---
+    - "eights.identity.register_project"
+    - "eights.identity.register_actor"
+    # --- governance namespace (governance.ts) ---
+    - "eights.governance.policy.evaluate"
+    - "eights.governance.consistency_check"
+    - "eights.governance.access.check"
+    - "eights.governance.redact"
+    - "eights.governance.budget.charge"
+    - "eights.governance.ceiling.tick"
+    - "eights.governance.cap.set"
+    - "eights.governance.hitl.request"
+    - "eights.governance.hitl.resolve"
+    - "eights.governance.hitl.list"
+    - "eights.governance.breaker.status"
+    - "eights.governance.breaker.outcome"
+    - "eights.governance.breaker.reset"
+    - "eights.governance.redact_for_squad"
+    # --- hydra namespace (hydra.ts) ---
+    - "eights.hydra.envelope.record"
+    - "eights.hydra.envelope.query"
+    - "eights.hydra.handoff.list"
+
+lifecycle:
+  startTimeoutMs: 30000
+  gracefulShutdownMs: 10000
+  crashLoopBreaker:
+    threshold: 5
+    windowMs: 60000
+
+audit:
+  # Tool used to export audit events for federated stitching.
+  # Source: TheEights/daemon/src/mcp/audit.ts — "eights.audit.trace"
+  # (TheEights exposes eights.audit.trace, not eights.audit.export)
+  exportTool: "eights.audit.trace"
+  dedupeKeyField: "event_id"
+
+governance:
+  # Constitution file path relative to runtime.cwd (C:/AiAppDeployments/TheEights).
+  # Verified to exist: C:/AiAppDeployments/TheEights/CONSTITUTION.md
+  constitutionPath: "CONSTITUTION.md"
+  # Tool used by meshd to attest the constitution hash.
+  # Source: TheEights/daemon/src/mcp/constitution.ts — "eights.constitution.attest"
+  attestTool: "eights.constitution.attest"
