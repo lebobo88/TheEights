@@ -13,7 +13,10 @@ metadata:
 
 runtime:
   type: node20-ts
-  entrypoint: "dist/index.js"
+  # Amendment 2026-06-05 (campaign mesh-console-unification, C1): the daemon build
+  # lives at daemon/dist/index.js — "dist/index.js" never existed at the repo root
+  # and produced a broken spawn spec in ~/.hydra/backends.json under key "eights".
+  entrypoint: "daemon/dist/index.js"
   cwd: "C:/AiAppDeployments/TheEights"
   healthProbe:
     type: mcp-tool-call
