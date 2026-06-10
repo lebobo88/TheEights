@@ -232,6 +232,9 @@ async function main(): Promise<void> {
 
   const hydraEngine = new HydraEngine(sql, audit, memory);
   const governance = new GovernanceStateEngine(sql, audit);
+  // TE-EV-1: wire governance so evolution can create/verify HITL rows for
+  // hitl-only proposals without a circular import.
+  evolution.setGovernance(governance);
   const redaction = new RedactionEngine(evolution, policy, audit);
   const classifier = new CellClassifier(completer);
 

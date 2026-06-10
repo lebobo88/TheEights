@@ -18,6 +18,7 @@ import type { SqliteStore } from "../stores/sqlite.js";
 import type { PolicyEngine } from "./policy.js";
 import type { AuditEngine } from "./audit.js";
 import type { WriteRouter, WriteResult } from "./writeback.js";
+import type { GovernanceStateEngine } from "./governance-state.js";
 import type { Envelope } from "../schemas/envelope.js";
 import type {
   Resource, ResourceKind, RiskClass, EvolutionPolicy, Consumer, WritebackMode, ResourceSource,
@@ -51,7 +52,7 @@ export interface EvaluatorAdapter {
     consumer: Consumer;
     current_content: string;
     candidate_content: string;
-  }): Promise<{ eval_delta: number; metric_scores: Record<string, number>; notes: string }>;
+  }): Promise<{ eval_delta: number; metric_scores: Record<string, number>; notes: string; evaluator_missing?: boolean }>;
 }
 
 const CRITICAL_AUDIT_URL = "graph://resources/critical";
@@ -59,6 +60,7 @@ const CRITICAL_AUDIT_URL = "graph://resources/critical";
 export class EvolutionEngine {
   private writeRouter: WriteRouter | null = null;
   private evaluator: EvaluatorAdapter | null = null;
+  private governance: GovernanceStateEngine | null = null;
 
   constructor(
     private readonly sql: SqliteStore,
@@ -71,13 +73,22 @@ export class EvolutionEngine {
 
   setWriteRouter(router: WriteRouter): void { this.writeRouter = router; }
   setEvaluator(ev: EvaluatorAdapter): void { this.evaluator = ev; }
+  /** Inject GovernanceStateEngine so the evolution engine can create and verify
+   *  HITL rows for hitl-only proposals (TE-EV-1). Must be called before any
+   *  hitl-only commit/approve path is exercised. */
+  setGovernance(gov: GovernanceStateEngine): void { this.governance = gov; }
 
   // ---------- RSPL ----------
 
   register(env: Envelope, input: RegisterResourceInput): Resource {
     const existing = this.getResource(input.rid);
     if (existing) {
-      // Idempotent: if the resource already exists, attach any new source paths.
+      // TE-EV-3 (#3b): run compat check on the existing-resource path too. A
+      // stored critical+auto combo from before the fix must be caught on re-register
+      // so it can't persist / evade the policy gate.
+      const effective_policy = input.evolution_policy ?? existing.evolution_policy;
+      validateRiskPolicyCompat(input.risk_class, effective_policy);
+      // Idempotent: attach any new source paths.
       if (input.source_paths?.length) {
         for (const p of input.source_paths) {
           this.upsertSource(input.rid, p, input.consumer ?? "eights", input.writeback_mode ?? "in-place+branch");
@@ -86,6 +97,9 @@ export class EvolutionEngine {
       return this.getResource(input.rid)!;
     }
     const evolution_policy = input.evolution_policy ?? DEFAULT_EVOLUTION_POLICY[input.risk_class];
+    // TE-EV-3: enforce risk/policy compatibility. critical must be frozen;
+    // high/medium may be at most hitl-only (not auto); only low may be auto.
+    validateRiskPolicyCompat(input.risk_class, evolution_policy);
     const version = contentHash(input.initial_content);
     const now = new Date().toISOString();
     const audit_url = input.audit_url ?? `graph://resources/${input.rid}`;
@@ -204,9 +218,14 @@ export class EvolutionEngine {
     if (!resource) throw new Error(`unknown resource ${proposal.resource_rid}`);
     this.setStatus(proposal_id, "evaluating");
 
-    let eval_delta = 0;
+    // TE-EV-2: default to fail-closed. evaluator_missing is only cleared when
+    // the evaluator runs successfully AND does not report it missing. This means
+    // a throwing evaluator, an absent/un-injected evaluator, and a registry with
+    // no matching adapter all leave evaluator_missing:true -> commit/approve block.
+    let eval_delta = -1;
     let metric_scores: Record<string, number> = {};
-    let notes = "no evaluator registered — delta=0 stub";
+    let notes = "no evaluator registered — blocked (evaluator_missing)";
+    let evaluator_missing: boolean = true;
 
     if (this.evaluator) {
       try {
@@ -218,11 +237,19 @@ export class EvolutionEngine {
           current_content: current,
           candidate_content: proposal.candidate_content,
         });
-        eval_delta = r.eval_delta;
+        // Only clear evaluator_missing when the adapter ran and did NOT signal it.
+        if (!r.evaluator_missing) {
+          evaluator_missing = false;
+          eval_delta = r.eval_delta;
+        } else {
+          // Registry found no adapter — keep evaluator_missing:true, delta stays -1.
+          eval_delta = -1;
+        }
         metric_scores = r.metric_scores;
         notes = r.notes;
       } catch (err) {
-        notes = `evaluator threw: ${err instanceof Error ? err.message : String(err)}`;
+        // Throwing evaluator: keep evaluator_missing:true, delta:-1.
+        notes = `evaluator threw: ${err instanceof Error ? err.message : String(err)} — blocked (evaluator_missing)`;
       }
     }
 
@@ -231,7 +258,7 @@ export class EvolutionEngine {
       temporal_decay: { passed: true, reason: undefined as string | undefined },
       access_control: { passed: true, reason: undefined as string | undefined },
     };
-    const report: EvaluationReport = { proposal_id, eval_delta, metric_scores, ssgm_gate_results: ssgm, notes };
+    const report: EvaluationReport = { proposal_id, eval_delta, metric_scores, ssgm_gate_results: ssgm, notes, evaluator_missing };
     this.sql.db.prepare(`UPDATE proposals SET evaluation_json = ? WHERE proposal_id = ?`).run(JSON.stringify(report), proposal_id);
     this.audit.record("evolution.evaluate", env, { proposal_id, eval_delta, kind: resource.kind, consumer: resource.consumer });
     return report;
@@ -242,17 +269,65 @@ export class EvolutionEngine {
     if (!proposal) throw new Error(`unknown proposal ${proposal_id}`);
     const resource = this.getResource(proposal.resource_rid);
     if (!resource) throw new Error(`unknown resource ${proposal.resource_rid}`);
-    if (resource.evolution_policy === "frozen") {
+
+    // TE-EV-3 (#3a): enumerate ALL EvolutionPolicy values explicitly.
+    // Only "auto" on a low-risk resource may auto-commit.
+    // "auto-low-risk" may auto-commit ONLY when risk_class is actually low.
+    // "frozen" and "hitl-only" are handled below.
+    // Any other / unknown value fails closed.
+    const policy = resource.evolution_policy;
+
+    if (policy === "frozen") {
       this.setStatus(proposal_id, "rejected", env.actor_id);
       this.audit.record("evolution.commit.rejected", env, { proposal_id, reason: "frozen" });
       return { committed: false, reason: "resource is frozen" };
     }
-    if (resource.evolution_policy === "hitl-only") {
+    if (policy === "hitl-only") {
+      // TE-EV-1: idempotently create a HITL queue row so that approve() can
+      // verify a human resolved it. Only insert if no pending/approved row
+      // already exists for this proposal_id.
+      if (this.governance) {
+        const existing = this.sql.db.prepare(
+          `SELECT request_id FROM hitl_queue
+           WHERE kind = 'evolution.approve'
+             AND json_extract(payload_json, '$.proposal_id') = ?
+             AND status IN ('pending', 'approved')
+           LIMIT 1`,
+        ).get(proposal_id) as { request_id: string } | undefined;
+        if (!existing) {
+          this.governance.hitlRequest(env, {
+            kind: "evolution.approve",
+            payload: { proposal_id, rid: resource.rid },
+          });
+        }
+      }
       this.audit.record("evolution.commit.queued", env, { proposal_id });
       return { committed: false, reason: "hitl-only — call approve() to commit" };
     }
+    if (policy === "auto-low-risk" && resource.risk_class !== "low") {
+      // auto-low-risk on a non-low resource is a misconfiguration — fail closed
+      // and route to HITL so a human can resolve the policy mismatch.
+      this.audit.record("evolution.commit.rejected", env, { proposal_id, reason: "auto-low-risk policy on non-low risk_class" });
+      return { committed: false, reason: "auto-low-risk policy requires risk_class=low — blocked; update policy to hitl-only or fix risk_class" };
+    }
+    if (policy !== "auto" && policy !== "auto-low-risk") {
+      // Unknown / unrecognised policy value — fail closed.
+      this.setStatus(proposal_id, "rejected", env.actor_id);
+      this.audit.record("evolution.commit.rejected", env, { proposal_id, reason: `unknown policy: ${policy}` });
+      return { committed: false, reason: `unknown evolution_policy '${policy}' — commit rejected (fail-closed)` };
+    }
+    // policy === "auto" OR policy === "auto-low-risk" with risk_class=low: fall through to eval checks.
     const evalReport = proposal.evaluation;
     if (!evalReport) return { committed: false, reason: "must evaluate before commit" };
+    // TE-EV-2 (#2a): require explicit evaluator_missing===false. Any legacy/persisted
+    // report lacking the field (undefined), or one with evaluator_missing===true,
+    // is treated as a failed evaluation. Only evaluator_missing===false (set by a
+    // successful evaluator run) is a valid pass.
+    if (evalReport.evaluator_missing !== false) {
+      this.setStatus(proposal_id, "rejected", env.actor_id);
+      this.audit.record("evolution.commit.rejected", env, { proposal_id, reason: "evaluator_missing" });
+      return { committed: false, reason: "no evaluator registered — auto/commit blocked (evaluator_missing)" };
+    }
     if (evalReport.eval_delta < 0) {
       this.setStatus(proposal_id, "rejected", env.actor_id);
       this.audit.record("evolution.commit.rejected", env, { proposal_id, reason: "negative eval delta" });
@@ -268,6 +343,37 @@ export class EvolutionEngine {
     if (resource?.evolution_policy === "frozen") {
       throw new Error("frozen resources cannot be approved without explicit unfreeze");
     }
+
+    // TE-EV-1: require a human-approved HITL row for hitl-only proposals.
+    if (resource?.evolution_policy === "hitl-only") {
+      const approvedRow = this.sql.db.prepare(
+        `SELECT request_id FROM hitl_queue
+         WHERE kind = 'evolution.approve'
+           AND json_extract(payload_json, '$.proposal_id') = ?
+           AND status = 'approved'
+         LIMIT 1`,
+      ).get(proposal_id) as { request_id: string } | undefined;
+      if (!approvedRow) {
+        this.audit.record("evolution.approve.rejected", env, { proposal_id, reason: "no_approved_hitl" });
+        return { committed: false, reason: "approve() requires a human-approved HITL request for this proposal" };
+      }
+    }
+
+    // TE-EV-1 + TE-EV-2 (#2a): require valid evaluation (parity with commit path).
+    // evaluator_missing must be explicitly false — undefined/missing/true all block.
+    const evalReport = proposal.evaluation;
+    if (!evalReport) {
+      return { committed: false, reason: "must evaluate before approve" };
+    }
+    if (evalReport.evaluator_missing !== false) {
+      this.audit.record("evolution.approve.rejected", env, { proposal_id, reason: "evaluator_missing" });
+      return { committed: false, reason: "no evaluator registered — approve blocked (evaluator_missing)" };
+    }
+    if (evalReport.eval_delta < 0) {
+      this.audit.record("evolution.approve.rejected", env, { proposal_id, reason: "negative eval delta" });
+      return { committed: false, reason: "eval_delta < 0 — approve rejected" };
+    }
+
     return this.performCommit(env, proposal_id);
   }
 
@@ -431,10 +537,53 @@ export class EvolutionEngine {
     return { committed: true, reason: "ok", version: proposal.candidate_version, writeback };
   }
 
-  /** Used by registrars when a source file is updated outside the evolution flow but should still be tracked as the current canonical version. */
+  /**
+   * Used by registrars when a source file is updated outside the evolution flow.
+   *
+   * register_now bypass fix: this method MUST respect the resource's evolution
+   * policy — it cannot directly mutate frozen or hitl-only resources, which would
+   * bypass the proposal/eval/HITL flow and violate the governance invariants.
+   *
+   * Policy routing:
+   *   frozen         → throws (no mutation ever)
+   *   hitl-only      → creates a pending proposal (propose), does NOT commit;
+   *   high / medium  → same as hitl-only (DEFAULT_EVOLUTION_POLICY maps both to hitl-only)
+   *   auto / auto-low-risk on low → imports directly (original behaviour)
+   *
+   * Returns the version hash. For hitl-only resources returns the existing
+   * current_version (unchanged) and surfaces the proposal_id in the audit log
+   * so the operator can find and approve it.
+   */
   importFromSource(env: Envelope, rid: string, content: string, justification: string): string {
     const resource = this.getResource(rid);
     if (!resource) throw new Error(`unknown resource ${rid}`);
+
+    const policy = resource.evolution_policy;
+
+    // Frozen: never mutate.
+    if (policy === "frozen") {
+      this.audit.record("evolution.import_from_source.blocked", env, { rid, justification, reason: "frozen" });
+      throw new Error(`importFromSource: resource '${rid}' is frozen — direct import blocked; use propose()+approve() after operator unfreeze`);
+    }
+
+    // hitl-only (or any non-auto policy): route through the proposal path instead
+    // of directly mutating current_version. The registrar's diff signal is
+    // preserved via the proposal, and the operator approves via the normal flow.
+    if (policy === "hitl-only" || (policy !== "auto" && policy !== "auto-low-risk")) {
+      const version = contentHash(content);
+      if (version === resource.current_version) return version; // already current
+      // Create a proposal so the change goes through HITL.
+      const proposal = this.propose(env, { rid, candidate_content: content, justification });
+      this.audit.record("evolution.import_from_source.queued", env, {
+        rid, version, justification,
+        proposal_id: proposal.proposal_id,
+        reason: `policy=${policy} — routed to proposal; approve to commit`,
+      });
+      // Return current (unchanged) version — the import has not been committed.
+      return resource.current_version;
+    }
+
+    // auto / auto-low-risk on low-risk resource: direct import (original behaviour).
     const version = contentHash(content);
     if (version === resource.current_version) return version;
     this.writeVersion(rid, version, content, env.actor_id, justification);
@@ -467,6 +616,38 @@ export class EvolutionEngine {
 
   private versionPath(rid: string, version: string): string {
     return join(this.resourcesDir, sanitizeRid(rid), `${version}.content`);
+  }
+}
+
+/**
+ * TE-EV-3: risk / policy compatibility gate (full enumeration).
+ *
+ * Rules (ADR-0006 extension):
+ *   critical  → MUST be frozen
+ *   high      → at most hitl-only  (auto / auto-low-risk forbidden)
+ *   medium    → at most hitl-only  (auto / auto-low-risk forbidden)
+ *   low       → any policy allowed
+ *
+ * Every known EvolutionPolicy value is checked explicitly so new values
+ * added to the enum surface a type error or a clear runtime rejection.
+ * Throws a descriptive Error on violation. Called in register() on BOTH
+ * the new-resource path and the existing-resource update path (#3b).
+ */
+export function validateRiskPolicyCompat(risk_class: string, evolution_policy: string): void {
+  if (risk_class === "critical" && evolution_policy !== "frozen") {
+    throw new Error(
+      `risk/policy conflict: critical resources must have evolution_policy=frozen, got '${evolution_policy}'`,
+    );
+  }
+  // auto and auto-low-risk are both "auto-commit" policies — neither may be
+  // used on high/medium risk resources.
+  if (
+    (risk_class === "high" || risk_class === "medium") &&
+    (evolution_policy === "auto" || evolution_policy === "auto-low-risk")
+  ) {
+    throw new Error(
+      `risk/policy conflict: ${risk_class} resources may not use evolution_policy=${evolution_policy} (max: hitl-only)`,
+    );
   }
 }
 

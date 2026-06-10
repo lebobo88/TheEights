@@ -120,14 +120,36 @@ export function registerGovernanceTools(
         handler: async (a: z.infer<typeof CapSetArgs>) => gov.setCap(a.envelope, a.run_id, a.kind, a.cap),
       },
       "eights.governance.hitl.request": {
-        description: "Open a durable HITL request. Survives daemon restart; surfaces to operator UI via hitl.list.",
+        description: "Open a durable HITL request. Survives daemon restart; surfaces to operator UI via hitl.list. NOTE: kind='evolution.approve' is reserved — created only by the evolution engine; this tool rejects that kind.",
         schema: HitlRequestArgs,
-        handler: async (a: z.infer<typeof HitlRequestArgs>) => gov.hitlRequest(a.envelope, { run_id: a.run_id, kind: a.kind, payload: a.payload }),
+        handler: async (a: z.infer<typeof HitlRequestArgs>) => {
+          // TE-EV-1: 'evolution.approve' rows are created exclusively by
+          // EvolutionEngine.commit() so that approve() can verify a human
+          // resolved the row. Allowing callers to forge them would defeat the
+          // self-commit prevention. Reject any attempt via the public tool.
+          if (a.kind === "evolution.approve") {
+            throw new Error("reserved kind — 'evolution.approve' rows are created only by the evolution engine; use eights.evolution.commit() to queue a HITL approval request");
+          }
+          return gov.hitlRequest(a.envelope, { run_id: a.run_id, kind: a.kind, payload: a.payload });
+        },
       },
       "eights.governance.hitl.resolve": {
         description: "Resolve a pending HITL request (approved | rejected). Records resolver + note in audit chain.",
         schema: HitlResolveArgs,
-        handler: async (a: z.infer<typeof HitlResolveArgs>) => gov.hitlResolve(a.envelope, a.request_id, a.decision, a.note),
+        handler: async (a: z.infer<typeof HitlResolveArgs>) => {
+          // TE-EV-1: FIXME(auth): hitlResolve trusts the caller's actor_id without
+          // verifying operator capability. For 'evolution.approve' rows this means
+          // any actor with MCP access can resolve them. The Envelope schema has no
+          // role/capability field and the IdentityEngine actor_kind (agent|human|system)
+          // is NOT propagated into the Envelope at runtime — there is NO operator-
+          // capability mechanism in the repo (confirmed by grep of Envelope, actors
+          // table, PolicyEngine, GovernanceStateEngine). An unforgeable operator
+          // capability would require Envelope.actor_kind or a bearer token checked
+          // against the actors table. That is an ecosystem auth gap tracked separately.
+          // The reserved-kind restriction above closes the forgery vector; this comment
+          // documents the remaining resolution-side gap.
+          return gov.hitlResolve(a.envelope, a.request_id, a.decision, a.note);
+        },
       },
       "eights.governance.hitl.list": {
         description: "List HITL requests, default status=pending. Operator UI calls this on every tick.",

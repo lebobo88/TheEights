@@ -6,6 +6,11 @@ import { SqliteStore } from "../src/stores/sqlite.js";
 import { AuditEngine } from "../src/engines/audit.js";
 import { PolicyEngine } from "../src/engines/policy.js";
 import { EvolutionEngine } from "../src/engines/evolution.js";
+import { GovernanceStateEngine } from "../src/engines/governance-state.js";
+import { EvalRegistry } from "../src/engines/eval/registry.js";
+import { NoopEval } from "../src/engines/eval/noop.js";
+import { WriteRouter } from "../src/engines/writeback.js";
+import type { EvalAdapter } from "../src/engines/eval/registry.js";
 import type { Envelope } from "../src/schemas/envelope.js";
 
 describe("evolution — RSPL + SEPL + risk routing", () => {
@@ -24,6 +29,18 @@ describe("evolution — RSPL + SEPL + risk routing", () => {
     const audit = new AuditEngine(sql, join(dir, "events"));
     const policy = new PolicyEngine(sql);
     engine = new EvolutionEngine(sql, join(dir, "resources"), policy, audit);
+    engine.setWriteRouter(new WriteRouter([]));
+    // TE-EV-2: evaluator MUST be injected; no evaluator = evaluator_missing -> commit blocked.
+    // Use a universal passing adapter for this baseline suite.
+    const reg = new EvalRegistry();
+    const universalPass: EvalAdapter = {
+      name: "universal-pass", kinds: ["prompt", "team", "rubric", "tool", "workflow", "schema",
+        "policy", "agent", "skill", "command", "hook", "contract", "constitution", "squad", "redaction_policy"],
+      consumers: "*",
+      async evaluate() { return { eval_delta: 1, metric_scores: {}, notes: "baseline pass" }; },
+    };
+    reg.register(universalPass);
+    engine.setEvaluator(reg);
     engine.seedCriticalResources();
   });
 
@@ -68,5 +85,320 @@ describe("evolution — RSPL + SEPL + risk routing", () => {
     const drift = engine.detectDrift();
     expect(Array.isArray(drift.registry)).toBe(true);
     expect(Array.isArray(drift.sources)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TE-EV-1: approve() self-commit bypass prevention
+// ---------------------------------------------------------------------------
+describe("TE-EV-1 — approve() self-commit prevention for hitl-only proposals", () => {
+  let dir: string;
+  let sql: SqliteStore;
+  let engine: EvolutionEngine;
+  let governance: GovernanceStateEngine;
+
+  const env: Envelope = {
+    tenant_id: "local", actor_id: "test-ev1", project_id: "TheEights",
+    domain: "infra", scope: [], trace_id: "t-ev1",
+  };
+  const humanEnv: Envelope = {
+    tenant_id: "local", actor_id: "operator-rob", project_id: "TheEights",
+    domain: "governance", scope: [], trace_id: "t-ev1-human",
+  };
+
+  /** A trivial adapter that always returns delta=1 so evaluation passes. */
+  const passingAdapter: EvalAdapter = {
+    name: "always-pass",
+    kinds: ["prompt"],
+    consumers: "*",
+    async evaluate() { return { eval_delta: 1, metric_scores: {}, notes: "ok" }; },
+  };
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "eights-ev1-"));
+    sql = new SqliteStore(join(dir, "state.db"));
+    sql.migrate();
+    const audit = new AuditEngine(sql, join(dir, "events"));
+    const policy = new PolicyEngine(sql);
+    governance = new GovernanceStateEngine(sql, audit);
+    engine = new EvolutionEngine(sql, join(dir, "resources"), policy, audit);
+    engine.setWriteRouter(new WriteRouter([]));
+    engine.setGovernance(governance);
+
+    const reg = new EvalRegistry();
+    reg.register(passingAdapter);
+    engine.setEvaluator(reg);
+
+    engine.register(env, {
+      rid: "resource:test.hitl.doc",
+      kind: "prompt",
+      risk_class: "medium",  // default policy = hitl-only
+      initial_content: "original content",
+    });
+  });
+
+  afterAll(() => { sql.close(); rmSync(dir, { recursive: true, force: true }); });
+
+  it("approve() on hitl-only proposal with NO approved HITL row -> committed:false (self-approve blocked)", async () => {
+    const prop = engine.propose(env, {
+      rid: "resource:test.hitl.doc",
+      candidate_content: "improved content",
+      justification: "self-approve attempt",
+    });
+    await engine.evaluate(env, prop.proposal_id);
+    // commit() queues it but does NOT commit
+    const commitResult = await engine.commit(env, prop.proposal_id);
+    expect(commitResult.committed).toBe(false);
+    expect(commitResult.reason).toMatch(/hitl-only/);
+
+    // approve() directly — no HITL row has been resolved yet
+    const approveResult = await engine.approve(env, prop.proposal_id);
+    expect(approveResult.committed).toBe(false);
+    expect(approveResult.reason).toMatch(/human-approved HITL/);
+
+    // Resource must NOT have changed
+    const resource = engine.getResource("resource:test.hitl.doc")!;
+    expect(resource.current_version).toBe(
+      engine.getResource("resource:test.hitl.doc")!.versions[0]!.version,
+    );
+  });
+
+  it("approve() after human hitlResolve(...,'approved') -> commits", async () => {
+    const prop = engine.propose(env, {
+      rid: "resource:test.hitl.doc",
+      candidate_content: "human-approved content",
+      justification: "proper human approval flow",
+    });
+    await engine.evaluate(env, prop.proposal_id);
+    // Queue the HITL row
+    await engine.commit(env, prop.proposal_id);
+
+    // Find the pending HITL row for this proposal
+    const row = sql.db.prepare(
+      `SELECT request_id FROM hitl_queue
+       WHERE kind = 'evolution.approve'
+         AND json_extract(payload_json, '$.proposal_id') = ?
+         AND status = 'pending'
+       LIMIT 1`,
+    ).get(prop.proposal_id) as { request_id: string } | undefined;
+    expect(row).toBeDefined();
+
+    // Human resolves it
+    governance.hitlResolve(humanEnv, row!.request_id, "approved");
+
+    // Now approve() should commit
+    const approveResult = await engine.approve(env, prop.proposal_id);
+    expect(approveResult.committed).toBe(true);
+    expect(approveResult.version).toBeTruthy();
+  });
+
+  it("approve() without evaluation -> rejected (HITL check fires first when no HITL row exists)", async () => {
+    const prop = engine.propose(env, {
+      rid: "resource:test.hitl.doc",
+      candidate_content: "no eval content",
+      justification: "skipping evaluate step",
+    });
+    // Do NOT call engine.evaluate() or engine.commit() — no HITL row created.
+    // The HITL guard fires before the eval guard (correct: missing HITL is the
+    // primary gate; missing eval would also block but is secondary).
+    const approveResult = await engine.approve(env, prop.proposal_id);
+    expect(approveResult.committed).toBe(false);
+    expect(approveResult.reason).toMatch(/human-approved HITL/);
+  });
+
+  it("approve() with approved HITL but missing evaluation -> rejected on eval check", async () => {
+    const prop = engine.propose(env, {
+      rid: "resource:test.hitl.doc",
+      candidate_content: "hitl but no eval content",
+      justification: "hitl approved but no eval",
+    });
+    // Manually create and immediately approve a HITL row (bypassing commit()).
+    const hitlRow = governance.hitlRequest(env, {
+      kind: "evolution.approve",
+      payload: { proposal_id: prop.proposal_id, rid: "resource:test.hitl.doc" },
+    });
+    governance.hitlResolve(humanEnv, hitlRow.request_id, "approved");
+
+    // Still no evaluation — should be rejected on eval check
+    const approveResult = await engine.approve(env, prop.proposal_id);
+    expect(approveResult.committed).toBe(false);
+    expect(approveResult.reason).toMatch(/evaluate before approve/);
+  });
+
+  it("idempotent HITL row creation: commit() called twice does not duplicate rows", async () => {
+    const prop = engine.propose(env, {
+      rid: "resource:test.hitl.doc",
+      candidate_content: "idempotent test content",
+      justification: "idempotency check",
+    });
+    await engine.evaluate(env, prop.proposal_id);
+    await engine.commit(env, prop.proposal_id);
+    await engine.commit(env, prop.proposal_id);  // second call
+
+    const count = sql.db.prepare(
+      `SELECT COUNT(*) AS cnt FROM hitl_queue
+       WHERE kind = 'evolution.approve'
+         AND json_extract(payload_json, '$.proposal_id') = ?`,
+    ).get(prop.proposal_id) as { cnt: number };
+    expect(count.cnt).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TE-EV-2: missing evaluator hard-fails, not passes on delta=0
+// Each sub-case uses an isolated engine so evaluator injection is clean.
+// ---------------------------------------------------------------------------
+
+/** Shared setup helper — creates an isolated store + engine for a single test. */
+function makeIsolatedEngine(baseDir: string, label: string) {
+  const dir = mkdtempSync(join(baseDir, `eights-${label}-`));
+  const sql = new SqliteStore(join(dir, "state.db"));
+  sql.migrate();
+  const audit = new AuditEngine(sql, join(dir, "events"));
+  const policy = new PolicyEngine(sql);
+  const engine = new EvolutionEngine(sql, join(dir, "resources"), policy, audit);
+  engine.setWriteRouter(new WriteRouter([]));
+  return { dir, sql, engine };
+}
+
+describe("TE-EV-2 — missing evaluator blocks auto/commit", () => {
+  const env: Envelope = {
+    tenant_id: "local", actor_id: "test-ev2", project_id: "TheEights",
+    domain: "infra", scope: [], trace_id: "t-ev2",
+  };
+  const baseDir = tmpdir();
+
+  it("EvalRegistry returns evaluator_missing=true and delta=-1 when no adapter matches", async () => {
+    const reg = new EvalRegistry();
+    // No adapters registered — pick() returns null.
+    const result = await reg.evaluate({
+      rid: "x", kind: "squad", consumer: "hydra",
+      current_content: "old", candidate_content: "new",
+    });
+    expect(result.evaluator_missing).toBe(true);
+    expect(result.eval_delta).toBe(-1);
+  });
+
+  it("(a) evaluator THROWS -> commit blocked, resource version unchanged", async () => {
+    const { dir, sql, engine } = makeIsolatedEngine(baseDir, "ev2a");
+    try {
+      const throwingAdapter: EvalAdapter = {
+        name: "throws", kinds: ["prompt"], consumers: "*",
+        async evaluate() { throw new Error("simulated evaluator crash"); },
+      };
+      const reg = new EvalRegistry();
+      reg.register(throwingAdapter);
+      engine.setEvaluator(reg);
+
+      engine.register(env, {
+        rid: "resource:test.ev2a.prompt", kind: "prompt", risk_class: "low",
+        evolution_policy: "auto", initial_content: "original",
+      });
+      const originalVersion = engine.getResource("resource:test.ev2a.prompt")!.current_version;
+
+      const prop = engine.propose(env, {
+        rid: "resource:test.ev2a.prompt", candidate_content: "new content",
+        justification: "throwing evaluator test",
+      });
+      const report = await engine.evaluate(env, prop.proposal_id);
+      expect(report.evaluator_missing).toBe(true);
+      expect(report.eval_delta).toBe(-1);
+      expect(report.notes).toMatch(/evaluator threw/);
+
+      const result = await engine.commit(env, prop.proposal_id);
+      expect(result.committed).toBe(false);
+      expect(result.reason).toMatch(/evaluator_missing/);
+
+      // Resource version must be unchanged — performCommit was NOT reached.
+      expect(engine.getResource("resource:test.ev2a.prompt")!.current_version).toBe(originalVersion);
+    } finally { sql.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("(b) NO evaluator injected at all -> commit blocked, resource version unchanged", async () => {
+    const { dir, sql, engine } = makeIsolatedEngine(baseDir, "ev2b");
+    try {
+      // setEvaluator() never called.
+      engine.register(env, {
+        rid: "resource:test.ev2b.prompt", kind: "prompt", risk_class: "low",
+        evolution_policy: "auto", initial_content: "original",
+      });
+      const originalVersion = engine.getResource("resource:test.ev2b.prompt")!.current_version;
+
+      const prop = engine.propose(env, {
+        rid: "resource:test.ev2b.prompt", candidate_content: "new content",
+        justification: "no evaluator injected",
+      });
+      const report = await engine.evaluate(env, prop.proposal_id);
+      expect(report.evaluator_missing).toBe(true);
+      expect(report.eval_delta).toBe(-1);
+
+      const result = await engine.commit(env, prop.proposal_id);
+      expect(result.committed).toBe(false);
+      expect(result.reason).toMatch(/evaluator_missing/);
+
+      expect(engine.getResource("resource:test.ev2b.prompt")!.current_version).toBe(originalVersion);
+    } finally { sql.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("(c) registry has NO matching adapter -> evaluator_missing -> commit blocked, version unchanged", async () => {
+    const { dir, sql, engine } = makeIsolatedEngine(baseDir, "ev2c");
+    try {
+      // NoopEval covers prompt/team/rubric/... but NOT squad/constitution.
+      const reg = new EvalRegistry();
+      reg.register(new NoopEval());
+      engine.setEvaluator(reg);
+
+      engine.register(env, {
+        rid: "resource:test.ev2c.squad", kind: "squad", risk_class: "low",
+        evolution_policy: "auto", initial_content: "original squad",
+      });
+      const originalVersion = engine.getResource("resource:test.ev2c.squad")!.current_version;
+
+      const prop = engine.propose(env, {
+        rid: "resource:test.ev2c.squad", candidate_content: "new squad",
+        justification: "no adapter for squad kind",
+      });
+      const report = await engine.evaluate(env, prop.proposal_id);
+      expect(report.evaluator_missing).toBe(true);
+      expect(report.eval_delta).toBe(-1);
+
+      const result = await engine.commit(env, prop.proposal_id);
+      expect(result.committed).toBe(false);
+      expect(result.reason).toMatch(/evaluator_missing/);
+
+      expect(engine.getResource("resource:test.ev2c.squad")!.current_version).toBe(originalVersion);
+    } finally { sql.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("(d) real adapter returning delta>=0 -> commits (no regression)", async () => {
+    const { dir, sql, engine } = makeIsolatedEngine(baseDir, "ev2d");
+    try {
+      const squadAdapter: EvalAdapter = {
+        name: "squad-pass", kinds: ["squad"], consumers: "*",
+        async evaluate() { return { eval_delta: 1, metric_scores: {}, notes: "squad ok" }; },
+      };
+      const reg = new EvalRegistry();
+      reg.register(squadAdapter);
+      engine.setEvaluator(reg);
+
+      engine.register(env, {
+        rid: "resource:test.ev2d.squad", kind: "squad", risk_class: "low",
+        evolution_policy: "auto", initial_content: "original squad",
+      });
+      const originalVersion = engine.getResource("resource:test.ev2d.squad")!.current_version;
+
+      const prop = engine.propose(env, {
+        rid: "resource:test.ev2d.squad", candidate_content: "improved squad",
+        justification: "regression guard — normal auto-commit still works",
+      });
+      const report = await engine.evaluate(env, prop.proposal_id);
+      expect(report.evaluator_missing).toBe(false);
+      expect(report.eval_delta).toBe(1);
+
+      const result = await engine.commit(env, prop.proposal_id);
+      expect(result.committed).toBe(true);
+      // Version must have changed.
+      expect(engine.getResource("resource:test.ev2d.squad")!.current_version).not.toBe(originalVersion);
+    } finally { sql.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 });

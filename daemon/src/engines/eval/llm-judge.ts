@@ -25,9 +25,13 @@ export class LlmJudgeEval implements EvalAdapter {
     private readonly llm: Completer,
   ) {}
 
-  async evaluate(input: { rid: string; kind: ResourceKind; consumer: Consumer; current_content: string; candidate_content: string }): Promise<{ eval_delta: number; metric_scores: Record<string, number>; notes: string }> {
+  async evaluate(input: { rid: string; kind: ResourceKind; consumer: Consumer; current_content: string; candidate_content: string }): Promise<{ eval_delta: number; evaluator_missing?: boolean; metric_scores: Record<string, number>; notes: string }> {
+    // TE-EV-2 (#2b): LLM unavailable / null / parse-failure MUST block commit,
+    // not pass on delta=0. Return evaluator_missing:true so the evolution engine's
+    // evaluator_missing!==false gate rejects the proposal. We do NOT throw because
+    // we want to preserve diagnostic notes; the evaluator_missing flag is the gate.
     if (!(await this.llm.available())) {
-      return { eval_delta: 0, metric_scores: {}, notes: "LLM unavailable — delta=0 fallback" };
+      return { eval_delta: -1, evaluator_missing: true, metric_scores: {}, notes: "LLM unavailable — blocked (evaluator_missing)" };
     }
     const rubricRid = `resource:eights.eval-rubric.${input.kind}`;
     const rubric = this.engine.getResource(rubricRid);
@@ -56,16 +60,22 @@ export class LlmJudgeEval implements EvalAdapter {
     ].join("\n");
 
     const raw = await this.llm.complete(system, user, { temperature: 0.1, maxTokens: 256 });
-    if (!raw) return { eval_delta: 0, metric_scores: {}, notes: "LLM returned no content" };
+    if (!raw) {
+      return { eval_delta: -1, evaluator_missing: true, metric_scores: {}, notes: "LLM returned no content — blocked (evaluator_missing)" };
+    }
 
     const parsed = extractJson(raw);
-    if (!parsed) return { eval_delta: 0, metric_scores: { raw_len: raw.length }, notes: `failed to parse LLM JSON: ${raw.slice(0, 200)}` };
+    if (!parsed) {
+      return { eval_delta: -1, evaluator_missing: true, metric_scores: { raw_len: raw.length }, notes: `failed to parse LLM JSON — blocked (evaluator_missing): ${raw.slice(0, 200)}` };
+    }
 
     const cur = clamp(Number(parsed.current ?? 0), -1, 1);
     const cand = clamp(Number(parsed.candidate ?? 0), -1, 1);
     const delta = cand - cur;
     return {
       eval_delta: delta,
+      // evaluator_missing is intentionally absent (falsy) on success so the
+      // evolution engine's evaluator_missing!==false check sees a clear pass.
       metric_scores: { current_score: cur, candidate_score: cand },
       notes: typeof parsed.notes === "string" ? parsed.notes.slice(0, 500) : "(no notes)",
     };

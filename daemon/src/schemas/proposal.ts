@@ -20,6 +20,10 @@ export const EvaluationReport = z.object({
     access_control: z.object({ passed: z.boolean(), reason: z.string().optional() }),
   }),
   notes: z.string().optional(),
+  /** True when the registry found no adapter for (kind, consumer). Callers
+   *  (commit, approve) treat this as a hard block regardless of eval_delta
+   *  (TE-EV-2). */
+  evaluator_missing: z.boolean().optional(),
 });
 export type EvaluationReport = z.infer<typeof EvaluationReport>;
 

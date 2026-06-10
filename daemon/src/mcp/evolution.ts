@@ -1,7 +1,24 @@
 import { z } from "zod";
 import { Envelope } from "../schemas/envelope.js";
-import { ResourceKind, RiskClass, EvolutionPolicy, Consumer, WritebackMode } from "../schemas/resource.js";
+import { ResourceKind, RiskClass, EvolutionPolicy, Consumer, WritebackMode, DEFAULT_EVOLUTION_POLICY } from "../schemas/resource.js";
 import type { EvolutionEngine } from "../engines/evolution.js";
+
+/** TE-EV-3: risk/policy compatibility predicate — mirrors validateRiskPolicyCompat in the engine.
+ *  Must stay in sync with engines/evolution.ts:validateRiskPolicyCompat. */
+function riskPolicyCompatible(risk_class: string, evolution_policy: string | undefined): { ok: boolean; message: string } {
+  const policy = evolution_policy ?? DEFAULT_EVOLUTION_POLICY[risk_class as keyof typeof DEFAULT_EVOLUTION_POLICY];
+  if (risk_class === "critical" && policy !== "frozen") {
+    return { ok: false, message: `risk/policy conflict: critical resources must have evolution_policy=frozen, got '${policy}'` };
+  }
+  // Both "auto" and "auto-low-risk" are auto-commit policies — forbidden on high/medium.
+  if (
+    (risk_class === "high" || risk_class === "medium") &&
+    (policy === "auto" || policy === "auto-low-risk")
+  ) {
+    return { ok: false, message: `risk/policy conflict: ${risk_class} resources may not use evolution_policy=${policy} (max: hitl-only)` };
+  }
+  return { ok: true, message: "ok" };
+}
 
 export const RegisterArgs = z.object({
   envelope: Envelope,
@@ -13,7 +30,10 @@ export const RegisterArgs = z.object({
   consumer: Consumer.optional(),
   source_paths: z.array(z.string()).optional(),
   writeback_mode: WritebackMode.optional(),
-});
+}).refine(
+  (d) => riskPolicyCompatible(d.risk_class, d.evolution_policy).ok,
+  (d) => ({ message: riskPolicyCompatible(d.risk_class, d.evolution_policy).message }),
+);
 
 export const ProposeArgs = z.object({
   envelope: Envelope,

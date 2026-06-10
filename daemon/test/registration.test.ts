@@ -61,16 +61,23 @@ describe("registration — source-anchored resources", () => {
     expect(result.reason).toBe("unchanged");
   });
 
-  it("imports a new version when the source file changes", () => {
+  it("queues a proposal (not a direct write) when the source file changes for a hitl-only resource", () => {
+    // register_now bypass fix: importFromSource on a hitl-only resource must NOT
+    // directly mutate current_version. It routes through propose() so the operator
+    // approves before any commit. The resource version stays at 1 (unchanged).
     const filePath = join(srcDir, "agent-a.md");
     writeFileSync(filePath, "you are agent A v2 — updated by human");
     const result = registerFile(engine, env, {
       source_path: filePath, kind: "agent", risk_class: "high",
       consumer: "pp", rid: "resource:pp.agent.agent-a",
     });
-    expect(result.kind).toBe("updated");
+    expect(result.kind).toBe("updated");  // registerFile still returns "updated" (it called importFromSource)
     const r = engine.getResource("resource:pp.agent.agent-a")!;
-    expect(r.versions.length).toBe(2);
+    // Version count stays 1 — the change is pending as a proposal, not committed.
+    expect(r.versions.length).toBe(1);
+    // A pending proposal should exist for this resource.
+    const pending = engine.listPending();
+    expect(pending.some((p) => p.resource_rid === "resource:pp.agent.agent-a")).toBe(true);
   });
 
   it("assigns critical+frozen for security/contract/spec rubrics", () => {
