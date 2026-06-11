@@ -80,6 +80,8 @@ export class SqliteStore {
     this.applyV3();
     this.applyV4();
     this.applyV5();
+    this.applyV6();
+    this.applyV7();
   }
 
   /**
@@ -121,6 +123,92 @@ export class SqliteStore {
       CREATE INDEX IF NOT EXISTS idx_consumed_cap_at ON consumed_capabilities(consumed_at);
       INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (5, datetime('now'));
     `);
+  }
+
+  /**
+   * V6 — WS10: partial index for fast active-proposal dedup lookup.
+   * Originally created as non-unique. V7 upgrades it to UNIQUE.
+   * This function remains to ensure the schema_version row exists for DBs
+   * that have never run V6, before V7 runs the dedup+unique creation.
+   *
+   * SQLite partial indexes (WHERE clause) are supported since 3.8.0 (2013).
+   */
+  private applyV6(): void {
+    // V7 will handle the actual index creation (UNIQUE); V6 just stamps the version.
+    // If V7 has not run yet, V6 creates the non-unique index as a placeholder —
+    // V7's DROP+CREATE will atomically replace it with the UNIQUE variant.
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_proposals_active_per_resource
+        ON proposals(resource_rid)
+        WHERE status IN ('pending', 'evaluating');
+      INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (6, datetime('now'));
+    `);
+  }
+
+  /**
+   * V7 — WS10 Round 3 (Fix 5): upgrade the partial index to UNIQUE.
+   *
+   * One-active-proposal-per-resource is a governance invariant: two concurrent
+   * reconcile runs must not both create proposals for the same resource.
+   * The UNIQUE constraint on (resource_rid) WHERE status IN ('pending','evaluating')
+   * enforces this at the DB level; propose() catches SQLITE_CONSTRAINT_UNIQUE and
+   * converts it to the typed PROPOSAL_ALREADY_PENDING error code.
+   *
+   * Migration steps (run inside a transaction to be atomic):
+   *   1. Dedup: for each resource_rid that has more than one active proposal,
+   *      keep the oldest (MIN(proposal_id) by insertion order / uuid sort).
+   *      Mark the rest 'superseded' so they no longer violate the constraint.
+   *   2. Drop the old non-unique index.
+   *   3. Create the new UNIQUE index.
+   *
+   * The 'superseded' status is a terminal state: superseded proposals are never
+   * committed, approved, or evaluated. The unique constraint only covers
+   * ('pending', 'evaluating') — a superseded row does not conflict with a new
+   * pending proposal on the same resource.
+   *
+   * Sequential propose→reject→propose is still supported: after a proposal is
+   * rejected (status='rejected'), it leaves the unique constraint scope, and a new
+   * pending proposal for the same resource can be created immediately.
+   */
+  private applyV7(): void {
+    // Idempotent: only run if version 7 has not been applied yet.
+    const v7Row = this.db.prepare(`SELECT version FROM schema_version WHERE version = 7`).get();
+    if (v7Row) return;
+
+    this.db.exec(`BEGIN`);
+    try {
+      // Step 1: dedup — mark duplicates 'superseded', keeping the oldest per resource_rid.
+      // "Oldest" = lowest proposal_id (UUIDs are random but insertion order is a valid tie-break).
+      this.db.exec(`
+        UPDATE proposals
+           SET status = 'superseded'
+         WHERE status IN ('pending', 'evaluating')
+           AND proposal_id NOT IN (
+             SELECT MIN(proposal_id)
+               FROM proposals
+              WHERE status IN ('pending', 'evaluating')
+              GROUP BY resource_rid
+           )
+      `);
+
+      // Step 2: drop the old non-unique partial index (created in V6).
+      this.db.exec(`DROP INDEX IF EXISTS idx_proposals_active_per_resource`);
+
+      // Step 3: recreate as UNIQUE.
+      this.db.exec(`
+        CREATE UNIQUE INDEX idx_proposals_active_per_resource
+          ON proposals(resource_rid)
+          WHERE status IN ('pending', 'evaluating')
+      `);
+
+      this.db.exec(`
+        INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (7, datetime('now'))
+      `);
+      this.db.exec(`COMMIT`);
+    } catch (err) {
+      this.db.exec(`ROLLBACK`);
+      throw err;
+    }
   }
 
   private applyV3(): void {

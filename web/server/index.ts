@@ -228,13 +228,25 @@ const FROZEN_REFUSAL =
 
 /** Resolve the proposal_id -> its target resource_rid via list_pending so the
     risk/frozen guard can run on approve/reject (which take a proposal_id, not a
-    rid). Returns null if the proposal is not found in the pending set. */
+    rid). Returns null if the proposal is not found in the pending set.
+    WS10: list_pending now returns Page<Proposal> — unwrap .items, iterate pages. */
 async function ridForProposal(proposalId: string): Promise<string | null> {
-  const pending = await readTool<Array<{ proposal_id?: string; resource_rid?: string }>>(
-    "evolution.list_pending",
-  );
-  const hit = (Array.isArray(pending) ? pending : []).find((p) => p.proposal_id === proposalId);
-  return hit?.resource_rid ?? null;
+  // Page through all pending proposals until we find a match (or exhaust them).
+  let pageOffset = 0;
+  const PAGE_LIMIT = 200;
+  while (true) {
+    const page = await readTool<{ items?: Array<{ proposal_id?: string; resource_rid?: string }>; has_more?: boolean; total?: number }>(
+      "evolution.list_pending",
+      { limit: PAGE_LIMIT, offset: pageOffset },
+    );
+    // Defensive unwrap: handle both Page<T> shape and legacy bare-array fallback.
+    const items = Array.isArray(page.items) ? page.items : (Array.isArray(page) ? page as Array<{ proposal_id?: string; resource_rid?: string }> : []);
+    const hit = items.find((p) => p.proposal_id === proposalId);
+    if (hit) return hit.resource_rid ?? null;
+    if (!page.has_more || items.length === 0) break;
+    pageOffset += items.length;
+  }
+  return null;
 }
 
 /* ---- write-path input validation ----
@@ -377,24 +389,59 @@ async function buildSnapshot(): Promise<Record<string, unknown>> {
   // Sequential, not Promise.all: every daemon call goes through the serialize()
   // mutex anyway (single in-flight call to the shared sqlite connection), so we
   // await them in order for clarity and to keep collisions impossible.
-  const resources = await settle(readTool<Array<{ consumer?: string }>>("evolution.list_resources"), []);
-  const pending = await settle(
-    readTool<
-      Array<{
-        resource_rid?: string;
-        risk_class?: string;
-        consumer?: string;
-        proposal_id?: string;
-        status?: string;
-        proposed_by?: string;
-        proposed_at?: string;
-        candidate_version?: string;
-        justification?: string;
-        candidate_content?: string;
-      }>
-    >("evolution.list_pending"),
-    [],
-  );
+  //
+  // WS10 + FIX 4: list_resources and list_pending return Page<T>. We iterate all
+  // pages so the snapshot is complete (previously capped at 200 items). The count
+  // fields (resources.total / pending.total) are always accurate since they come
+  // from the first page's .total field, not items.length.
+  const SNAP_PAGE = 200;
+  const resources: Array<{ consumer?: string }> = [];
+  let resourcesTotal = 0;
+  {
+    let snOff = 0;
+    while (true) {
+      const p = await settle(
+        readTool<{ items?: Array<{ consumer?: string }>; total?: number; has_more?: boolean }>("evolution.list_resources", { limit: SNAP_PAGE, offset: snOff }),
+        {} as { items?: Array<{ consumer?: string }>; total?: number; has_more?: boolean },
+      );
+      const items = Array.isArray(p.items) ? p.items : [];
+      resources.push(...items);
+      if (snOff === 0) resourcesTotal = p.total ?? resources.length;
+      if (!p.has_more || items.length === 0) break;
+      snOff += items.length;
+    }
+    if (resourcesTotal === 0) resourcesTotal = resources.length;
+  }
+
+  type PendingItem = {
+    resource_rid?: string;
+    risk_class?: string;
+    consumer?: string;
+    proposal_id?: string;
+    status?: string;
+    proposed_by?: string;
+    proposed_at?: string;
+    candidate_version?: string;
+    justification?: string;
+    candidate_content?: string;
+  };
+  const pending: PendingItem[] = [];
+  let pendingTotal = 0;
+  {
+    let snOff = 0;
+    while (true) {
+      const p = await settle(
+        readTool<{ items?: PendingItem[]; total?: number; has_more?: boolean }>("evolution.list_pending", { limit: SNAP_PAGE, offset: snOff }),
+        {} as { items?: PendingItem[]; total?: number; has_more?: boolean },
+      );
+      const items = Array.isArray(p.items) ? p.items : [];
+      pending.push(...items);
+      if (snOff === 0) pendingTotal = p.total ?? pending.length;
+      if (!p.has_more || items.length === 0) break;
+      snOff += items.length;
+    }
+    if (pendingTotal === 0) pendingTotal = pending.length;
+  }
   const hitl = await settle(readTool<{ items?: Array<{ id?: string; reason?: string }> }>("governance.hitl.list", { status: "pending" }), { items: [] });
   const cells = await settle(readTool<Record<string, number>>("cells.distribution", { scope: {} }), {});
   const envelopes = await settle(readTool<{ count?: number; items?: unknown[] }>("hydra.envelope.query", { workflow_id: "" }), {});
@@ -411,7 +458,7 @@ async function buildSnapshot(): Promise<Record<string, unknown>> {
     resourcesByConsumer[c] = (resourcesByConsumer[c] ?? 0) + 1;
   }
 
-  enrichRiskInBackground(pending.map((p) => p.resource_rid ?? ""));
+  enrichRiskInBackground((pending as PendingItem[]).map((p) => p.resource_rid ?? ""));
 
   const hitlItems = Array.isArray(hitl.items) ? hitl.items : [];
   const recentEvents = (Array.isArray(recent) ? recent : []).map((ev) => ({
@@ -435,12 +482,13 @@ async function buildSnapshot(): Promise<Record<string, unknown>> {
       // (a full-chain count would be expensive); the frontend falls back to the
       // baked value when this is null. recentEventsWindow exposes the live tail.
       events: null,
-      resources: resources.length,
-      pending: pending.length,
+      // WS10: use the page total (accurate even when >200 items exist).
+      resources: resourcesTotal,
+      pending: pendingTotal,
     },
     recentEventsWindow: recentEvents.length,
     chain,
-    pending: pending.map((p) => {
+    pending: (pending as PendingItem[]).map((p) => {
       const rid = p.resource_rid ?? "";
       // Carry the full proposal record so the inspector can show it on click.
       // Cap candidate_content so a few large proposals can't bloat the snapshot.
@@ -670,10 +718,22 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         json(res, 200, await readTool("governance.hitl.list", { status: "pending" }));
         return;
       case "/api/resources/counts": {
-        const resources = await readTool<Array<{ consumer?: string }>>("evolution.list_resources");
+        // FIX 4: iterate all pages so byConsumer counts are complete (not capped at 200).
+        const rcAll: Array<{ consumer?: string }> = [];
+        let rcTotal = 0;
+        let rcOff = 0;
+        while (true) {
+          const rcPage = await readTool<{ items?: Array<{ consumer?: string }>; total?: number; has_more?: boolean }>("evolution.list_resources", { limit: 200, offset: rcOff });
+          const rcItems = Array.isArray(rcPage.items) ? rcPage.items : [];
+          rcAll.push(...rcItems);
+          if (rcOff === 0) rcTotal = rcPage.total ?? rcAll.length;
+          if (!rcPage.has_more || rcItems.length === 0) break;
+          rcOff += rcItems.length;
+        }
+        if (rcTotal === 0) rcTotal = rcAll.length;
         const byConsumer: Record<string, number> = {};
-        for (const r of resources) byConsumer[r.consumer ?? "unknown"] = (byConsumer[r.consumer ?? "unknown"] ?? 0) + 1;
-        json(res, 200, { total: resources.length, byConsumer });
+        for (const r of rcAll) byConsumer[r.consumer ?? "unknown"] = (byConsumer[r.consumer ?? "unknown"] ?? 0) + 1;
+        json(res, 200, { total: rcTotal, byConsumer });
         return;
       }
       case "/api/chain/status":

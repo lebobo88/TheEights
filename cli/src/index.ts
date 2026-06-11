@@ -122,9 +122,26 @@ program.command("status").description("Daemon health snapshot").action(async () 
   await c.connect();
   try {
     const verify = await c.call<{ ok: boolean }>("eights.audit.verify", {});
-    const drift = await c.call<{ registry: unknown[]; sources: unknown[] }>("eights.evolution.detect_drift", {});
-    const pending = await c.call<unknown[]>("eights.evolution.list_pending", {});
-    process.stdout.write(JSON.stringify({ audit_chain: verify, drift_summary: { registry: drift.registry.length, sources: drift.sources.length }, pending_proposals: pending.length }, null, 2) + "\n");
+    const statusEnv = defaultEnvelope(OPERATOR_ACTOR_ID);
+    // Single detect_drift call (limit=1) — the engine computes total_registry,
+    // total_sources, total_resources, and total across ALL resources on every call
+    // regardless of limit/offset. No accumulation loop, no allDriftItems array.
+    const dp = await c.call<{ total: number; total_registry: number; total_sources: number; total_resources: number }>(
+      "eights.evolution.detect_drift",
+      { envelope: statusEnv, limit: 1, offset: 0 },
+    );
+    const pendingPage = await c.call<{ items: unknown[]; total: number }>("eights.evolution.list_pending", { envelope: statusEnv });
+    const pendingTotal = typeof pendingPage.total === "number" ? pendingPage.total : (Array.isArray(pendingPage) ? (pendingPage as unknown[]).length : 0);
+    process.stdout.write(JSON.stringify({
+      audit_chain: verify,
+      drift_summary: {
+        registry: dp.total_registry ?? 0,
+        sources: dp.total_sources ?? 0,
+        total_drifts: dp.total,
+        total_resources: dp.total_resources ?? 0,
+      },
+      pending_proposals: pendingTotal,
+    }, null, 2) + "\n");
   } finally { await c.close(); }
 });
 
@@ -179,17 +196,63 @@ program.command("resources").description("List registered resources")
   .option("--kind <k>", "filter by kind")
   .option("--risk <r>", "filter by risk class")
   .action(async (opts: { consumer?: string; kind?: string; risk?: string }) => withClient(async (c) => {
-    const res = await c.call<Array<{ rid: string; kind: string; risk_class: string; evolution_policy: string; consumer: string; sources: Array<{ source_path: string }> }>>("eights.evolution.list_resources", opts);
-    process.stdout.write(JSON.stringify(res.map((r) => ({ rid: r.rid, kind: r.kind, risk: r.risk_class, policy: r.evolution_policy, consumer: r.consumer, sources: r.sources?.length ?? 0 })), null, 2) + "\n");
+    // WS10: list_resources returns Page<Resource> — iterate pages until has_more=false.
+    // FIX 1b: envelope required on read tools.
+    const all: Array<{ rid: string; kind: string; risk_class: string; evolution_policy: string; consumer: string; sources: Array<{ source_path: string }> }> = [];
+    let pageOffset = 0;
+    const PAGE_LIMIT = 200;
+    while (true) {
+      const page = await c.call<{ items: typeof all; total: number; has_more: boolean }>("eights.evolution.list_resources", { ...opts, envelope: defaultEnvelope(OPERATOR_ACTOR_ID), limit: PAGE_LIMIT, offset: pageOffset });
+      const items = Array.isArray(page.items) ? page.items : (Array.isArray(page) ? page as typeof all : []);
+      all.push(...items);
+      if (!page.has_more || items.length === 0) break;
+      pageOffset += items.length;
+    }
+    process.stdout.write(JSON.stringify(all.map((r) => ({ rid: r.rid, kind: r.kind, risk: r.risk_class, policy: r.evolution_policy, consumer: r.consumer, sources: r.sources?.length ?? 0 })), null, 2) + "\n");
   }));
 
 const resource = program.command("resource");
-resource.command("show <rid>").action(async (rid: string) => withClient(async (c) => c.call("eights.evolution.get_resource", { rid })));
+resource.command("show <rid>").action(async (rid: string) => withClient(async (c) => c.call("eights.evolution.get_resource", { envelope: defaultEnvelope(OPERATOR_ACTOR_ID), rid })));
 resource.command("unfreeze <rid>").description("Operator-signed unfreeze (frozen → hitl-only)").action(async (rid: string) => withClient(async (c) =>
   c.call("eights.evolution.unfreeze", { envelope: opEnvelope("evolution.unfreeze", rid), rid })
 ));
 
-program.command("drift").description("Scan registry + consumer source paths for drift").action(async () => withClient(async (c) => c.call("eights.evolution.detect_drift", {})));
+program.command("drift").description("Scan registry + consumer source paths for drift").action(async () => {
+  // Stream pages: fetch → print → discard → repeat. No allItems accumulation.
+  // Each page's JSON is written to stdout independently; totals are printed last.
+  const c = new EightsClient();
+  await c.connect();
+  try {
+    const env = defaultEnvelope(OPERATOR_ACTOR_ID);
+    const PAGE_LIMIT = 200;
+    let pageOffset = 0;
+    let total = 0;
+    let totalResources = 0;
+    let totalRegistry = 0;
+    let totalSources = 0;
+    let first = true;
+    process.stdout.write("[\n");
+    while (true) {
+      const page = await c.call<{ items: unknown[]; total: number; total_registry: number; total_sources: number; total_resources: number; has_more: boolean }>("eights.evolution.detect_drift", { envelope: env, limit: PAGE_LIMIT, offset: pageOffset });
+      const items = Array.isArray(page.items) ? page.items : [];
+      if (first) {
+        total = page.total ?? 0;
+        totalResources = page.total_resources ?? 0;
+        totalRegistry = page.total_registry ?? 0;
+        totalSources = page.total_sources ?? 0;
+        first = false;
+      }
+      for (const item of items) {
+        if (pageOffset > 0 || items.indexOf(item) > 0) process.stdout.write(",\n");
+        process.stdout.write("  " + JSON.stringify(item));
+      }
+      if (!page.has_more || items.length === 0) break;
+      pageOffset += items.length;
+    }
+    process.stdout.write("\n]\n");
+    process.stderr.write(JSON.stringify({ total_drifts: total, total_registry: totalRegistry, total_sources: totalSources, total_resources: totalResources }) + "\n");
+  } finally { await c.close(); }
+});
 
 program.command("miner").description("Run the cross-project pattern miner once").action(async () => withClient(async (c) => c.call("eights.miner.run_now", {})));
 
@@ -200,10 +263,23 @@ program.command("review").description("Interactive HITL review queue").action(as
   await c.connect();
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const proposals = await c.call<Array<{ proposal_id: string; resource_rid: string; justification: string; candidate_version: string; evaluation?: { eval_delta: number; notes: string } }>>("eights.evolution.list_pending", {});
+    // FIX 1b: envelope required on list_pending.
+    // FIX 4: iterate all pages so the review queue is complete (not capped at page-1 limit).
+    const reviewEnv = defaultEnvelope(OPERATOR_ACTOR_ID);
+    type PendingProposal = { proposal_id: string; resource_rid: string; justification: string; candidate_version: string; evaluation?: { eval_delta: number; notes: string } };
+    const proposals: PendingProposal[] = [];
+    let reviewOffset = 0;
+    const REVIEW_PAGE = 200;
+    while (true) {
+      const pendingRaw = await c.call<{ items: PendingProposal[]; total: number; has_more: boolean }>("eights.evolution.list_pending", { envelope: reviewEnv, limit: REVIEW_PAGE, offset: reviewOffset });
+      const items = Array.isArray(pendingRaw.items) ? pendingRaw.items : [];
+      proposals.push(...items);
+      if (!pendingRaw.has_more || items.length === 0) break;
+      reviewOffset += items.length;
+    }
     if (!proposals.length) { process.stdout.write("no pending proposals\n"); return; }
     for (const p of proposals) {
-      const resource = await c.call<{ kind: string; risk_class: string; consumer: string; sources: Array<{ source_path: string }> }>("eights.evolution.get_resource", { rid: p.resource_rid });
+      const resource = await c.call<{ kind: string; risk_class: string; consumer: string; sources: Array<{ source_path: string }> }>("eights.evolution.get_resource", { envelope: reviewEnv, rid: p.resource_rid });
       process.stdout.write("\n----\n");
       process.stdout.write(`proposal: ${p.proposal_id}\n`);
       process.stdout.write(`resource: ${p.resource_rid} (${resource?.kind}/${resource?.risk_class}, consumer=${resource?.consumer})\n`);

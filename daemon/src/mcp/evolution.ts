@@ -2,6 +2,7 @@ import { z } from "zod";
 import { Envelope } from "../schemas/envelope.js";
 import { ResourceKind, RiskClass, EvolutionPolicy, Consumer, WritebackMode, DEFAULT_EVOLUTION_POLICY } from "../schemas/resource.js";
 import type { EvolutionEngine } from "../engines/evolution.js";
+import { clampPage } from "../engines/evolution.js";
 
 /** TE-EV-3: risk/policy compatibility predicate — mirrors validateRiskPolicyCompat in the engine.
  *  Must stay in sync with engines/evolution.ts:validateRiskPolicyCompat. */
@@ -49,12 +50,62 @@ export const ApproveArgs = z.object({ envelope: Envelope, proposal_id: z.string(
 export const RejectArgs = z.object({ envelope: Envelope, proposal_id: z.string(), reason: z.string() });
 export const RollbackArgs = z.object({ envelope: Envelope, rid: z.string(), to_version: z.string() });
 export const UnfreezeArgs = z.object({ envelope: Envelope, rid: z.string() });
-export const GetResourceArgs = z.object({ rid: z.string() });
+/** FIX (Round 3+): envelope required — every get_resource read is audited. */
+export const GetResourceArgs = z.object({ envelope: Envelope, rid: z.string() });
+
+/**
+ * WS10: Pagination fields added to list tools at the MCP boundary.
+ * FIX 7: Accept any integer at the schema layer; clampPage() does the [1,200] / default-50
+ * clamping in the handler so limit=500 returns 200 items (not a validation error).
+ */
+export const PaginationFields = {
+  limit: z.number().int().optional().describe("Page size (clamped to [1,200]; default 50)"),
+  offset: z.number().int().optional().describe("Page start offset (default 0, clamped to >=0)"),
+};
+
 export const ListResourcesArgs = z.object({
+  /** FIX 1b (Round 3): envelope is REQUIRED — every read is audited at the MCP boundary. */
+  envelope: Envelope,
   consumer: Consumer.optional(),
   kind: ResourceKind.optional(),
   risk: RiskClass.optional(),
+  ...PaginationFields,
 });
+
+/**
+ * WS10: list_pending args — includes pagination.
+ * Returns Page<Proposal> with total + has_more so consumers can page through
+ * the full pending queue (currently ~530 rows) without loading it all at once.
+ * FIX 1b (Round 3): envelope is REQUIRED — every read is audited at the MCP boundary.
+ */
+export const ListPendingArgs = z.object({
+  envelope: Envelope,
+  ...PaginationFields,
+});
+
+/**
+ * WS10: detect_drift args — includes pagination over DRIFT ENTRIES (FIX 3).
+ * total = total drift entries across all resources; total_resources = COUNT(resources).
+ * has_more reflects whether more DRIFT ENTRIES remain.
+ * FIX 1b (Round 3): envelope is REQUIRED — every read is audited at the MCP boundary.
+ */
+export const DetectDriftArgs = z.object({
+  envelope: Envelope,
+  ...PaginationFields,
+});
+
+/**
+ * WS10: reconcile_drift args.
+ * dryRun defaults true — only returns planned actions without creating proposals.
+ * Set dryRun:false to create proposals (never commits; goes through propose() only).
+ */
+export const ReconcileDriftArgs = z.object({
+  envelope: Envelope,
+  rid: z.string().optional().describe("Scope to a single resource id; omit for all resources"),
+  dryRun: z.boolean().optional().describe("Default true. Set false to create proposals (never commits)."),
+  ...PaginationFields,
+});
+
 export const Empty = z.object({});
 
 export function registerEvolutionTools(engine: EvolutionEngine) {
@@ -70,14 +121,17 @@ export function registerEvolutionTools(engine: EvolutionEngine) {
         }),
     },
     "eights.evolution.get_resource": {
-      description: "Get a resource by rid.",
+      description: "Get a resource by rid. Envelope required — every read is audited.",
       schema: GetResourceArgs,
-      handler: async (a: z.infer<typeof GetResourceArgs>) => engine.getResource(a.rid),
+      handler: async (a: z.infer<typeof GetResourceArgs>) => engine.getResource(a.rid, a.envelope),
     },
     "eights.evolution.list_resources": {
-      description: "List resources, optionally filtered by consumer / kind / risk.",
+      description: "List resources (paginated). Returns Page<Resource> with total + has_more. limit default 50, max 200 (clamped). Use offset to page. Envelope required — every read is audited.",
       schema: ListResourcesArgs,
-      handler: async (a: z.infer<typeof ListResourcesArgs>) => engine.listResources(a),
+      handler: async (a: z.infer<typeof ListResourcesArgs>) => {
+        const { limit, offset } = clampPage({ limit: a.limit, offset: a.offset });
+        return engine.listResourcesPage({ consumer: a.consumer, kind: a.kind, risk: a.risk }, { limit, offset }, a.envelope);
+      },
     },
     "eights.evolution.propose": {
       description: "Propose a new version of a resource.",
@@ -115,14 +169,36 @@ export function registerEvolutionTools(engine: EvolutionEngine) {
       handler: async (a: z.infer<typeof UnfreezeArgs>) => { engine.unfreeze(a.envelope, a.rid); return { ok: true, rid: a.rid }; },
     },
     "eights.evolution.list_pending": {
-      description: "List proposals awaiting evaluation or HITL approval.",
-      schema: Empty,
-      handler: async () => engine.listPending(),
+      description: "List proposals awaiting evaluation or HITL approval (paginated). Returns Page<Proposal> with total + has_more. limit default 50, max 200 (clamped). Envelope required — every read is audited.",
+      schema: ListPendingArgs,
+      handler: async (a: z.infer<typeof ListPendingArgs>) => {
+        const { limit, offset } = clampPage({ limit: a.limit, offset: a.offset });
+        return engine.listPendingPage({ limit, offset }, a.envelope);
+      },
     },
     "eights.evolution.detect_drift": {
-      description: "Drift scan over both ~/.eights/resources and registered consumer source_paths.",
-      schema: Empty,
-      handler: async () => engine.detectDrift(),
+      description: "Drift scan (FIX 3: paginated over DRIFT ENTRIES). Returns Page<DriftEntry> with total=total drift entries, total_resources=COUNT(resources), has_more over entries. limit default 50, max 200 (clamped). Envelope required — every read is audited.",
+      schema: DetectDriftArgs,
+      handler: async (a: z.infer<typeof DetectDriftArgs>) => {
+        const { limit, offset } = clampPage({ limit: a.limit, offset: a.offset });
+        return engine.detectDriftPage({ limit, offset }, a.envelope);
+      },
+    },
+    "eights.evolution.reconcile_drift": {
+      description: [
+        "Drift reconciliation (WS10). Scans drifted resources and plans or applies remediation.",
+        "dryRun defaults TRUE — returns planned actions without creating proposals.",
+        "Set dryRun:false to create proposals (uses propose() only — NEVER commits; Run #11 commit gates still apply).",
+        "SOURCE DRIFT → action=propose (or skip if proposal already pending).",
+        "REGISTRY DRIFT (hash mismatch/missing) → action=surface (never mutated; possible tamper).",
+        "CRITICAL/FROZEN resources → action=skip (no mutation ever).",
+        "Returns { planned, total_drifts, applied, limit, offset, has_more }.",
+      ].join(" "),
+      schema: ReconcileDriftArgs,
+      handler: async (a: z.infer<typeof ReconcileDriftArgs>) => {
+        const { limit, offset } = clampPage({ limit: a.limit, offset: a.offset });
+        return engine.reconcileDrift(a.envelope, { rid: a.rid, dryRun: a.dryRun, limit, offset });
+      },
     },
   } as const;
 }

@@ -27,6 +27,62 @@ import type {
 import { DEFAULT_EVOLUTION_POLICY } from "../schemas/resource.js";
 import type { Proposal, ProposalStatus, EvaluationReport } from "../schemas/proposal.js";
 
+// ---------- WS10: Pagination types ----------
+
+/**
+ * Generic paginated result envelope.
+ * All MCP boundary list tools return this shape (WS10).
+ */
+export interface Page<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+/** Pagination options used by the *Page methods. */
+export interface PaginationOpts {
+  limit?: number;
+  offset?: number;
+}
+
+// ---------- WS10: ReconcileDrift types ----------
+
+export type ReconcileDriftAction = "propose" | "surface" | "skip";
+
+export interface ReconcilePlanEntry {
+  rid: string;
+  drift_kind: "source" | "registry";
+  action: ReconcileDriftAction;
+  reason: string;
+  proposal_id?: string;
+}
+
+export interface ReconcileDriftOpts {
+  /** Scope to a single resource id. */
+  rid?: string;
+  /**
+   * When true (THE DEFAULT — if undefined, treated as true), only plans actions
+   * without mutating state. Set explicitly to false to create proposals.
+   */
+  dryRun?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ReconcileDriftResult {
+  planned: ReconcilePlanEntry[];
+  /** Number of drift entries returned in this page (== planned.length). */
+  total_drifts: number;
+  /** Total resources scanned (for pagination context). */
+  total_resources: number;
+  applied: boolean;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
 export interface ProposeInput {
   rid: string;
   candidate_content: string;
@@ -231,18 +287,27 @@ export class EvolutionEngine {
     ).run(rid, source_path, consumer, mode);
   }
 
-  getResource(rid: string): Resource | null {
+  /**
+   * Look up a resource by rid.
+   * Internal callers omit `env`; the MCP boundary always passes it so the read is audited.
+   * This keeps the signature backwards-compatible: all internal `getResource(rid)` calls
+   * continue to work unchanged while the MCP handler gets a mandatory audit trail.
+   */
+  getResource(rid: string, env?: Envelope): Resource | null {
     const row = this.sql.db.prepare("SELECT * FROM resources WHERE rid = ?").get(rid) as
       | { rid: string; kind: string; risk_class: string; current_version: string; evolution_policy: string; audit_url: string; consumer: string }
       | undefined;
-    if (!row) return null;
+    if (!row) {
+      if (env) this.audit.record("evolution.read", env, { op: "get_resource", rid, found: false });
+      return null;
+    }
     const versions = this.sql.db
       .prepare("SELECT * FROM resource_versions WHERE rid = ? ORDER BY created_at ASC")
       .all(rid) as Array<{ rid: string; version: string; content: string; signature: string; created_at: string; created_by: string; justification: string | null; evidence_memory_ids_json: string }>;
     const sources = this.sql.db
       .prepare("SELECT * FROM resource_sources WHERE rid = ?")
       .all(rid) as Array<{ source_path: string; consumer: string; writeback_mode: string; last_written_version: string | null; last_written_at: string | null }>;
-    return {
+    const resource: Resource = {
       rid: row.rid,
       kind: row.kind as ResourceKind,
       risk_class: row.risk_class as RiskClass,
@@ -267,6 +332,8 @@ export class EvolutionEngine {
         last_written_at: s.last_written_at ?? undefined,
       })),
     };
+    if (env) this.audit.record("evolution.read", env, { op: "get_resource", rid, found: true });
+    return resource;
   }
 
   listResources(filter: { consumer?: Consumer; kind?: ResourceKind; risk?: RiskClass } = {}): Resource[] {
@@ -280,6 +347,36 @@ export class EvolutionEngine {
     return rows.map((r) => this.getResource(r.rid)!).filter(Boolean);
   }
 
+  /**
+   * WS10: Paginated version of listResources.
+   * Uses SQL LIMIT/OFFSET + a separate COUNT(*) — does NOT load all rows then slice.
+   * Intended for MCP boundary calls where unbounded results are forbidden.
+   * FIX 1b: accepts optional envelope; when present, emits an "evolution.read" audit event.
+   */
+  listResourcesPage(
+    filter: { consumer?: Consumer; kind?: ResourceKind; risk?: RiskClass } = {},
+    opts: PaginationOpts = {},
+    env?: Envelope,
+  ): Page<Resource> {
+    const { limit, offset } = clampPage(opts);
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (filter.consumer) { where.push("consumer = ?"); params.push(filter.consumer); }
+    if (filter.kind) { where.push("kind = ?"); params.push(filter.kind); }
+    if (filter.risk) { where.push("risk_class = ?"); params.push(filter.risk); }
+    const whereClause = where.length ? "WHERE " + where.join(" AND ") : "";
+    const countRow = this.sql.db
+      .prepare(`SELECT COUNT(*) as n FROM resources ${whereClause}`)
+      .get(...params) as { n: number };
+    const total = countRow.n;
+    const rows = this.sql.db
+      .prepare(`SELECT rid FROM resources ${whereClause} ORDER BY rid LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset) as Array<{ rid: string }>;
+    const items = rows.map((r) => this.getResource(r.rid)!).filter(Boolean);
+    if (env) this.audit.record("evolution.read", env, { op: "list_resources", limit, offset, total });
+    return { items, total, limit, offset, has_more: offset + items.length < total };
+  }
+
   readVersion(rid: string, version: string): string | null {
     const path = this.versionPath(rid, version);
     if (!existsSync(path)) return null;
@@ -289,23 +386,75 @@ export class EvolutionEngine {
   // ---------- SEPL ----------
 
   propose(env: Envelope, input: ProposeInput): Proposal {
+    // FIX 1a (Round 3): write-authz gate — validate actor_id against the actors table.
+    // Empty / missing actor_id is rejected before the DB lookup (fast-fail).
+    // Any actor_id not present in the actors table is rejected.
+    // This blocks reconcileDrift (and any other caller) from bulk-creating proposals
+    // with an anonymous or unregistered envelope.
+    if (!env.actor_id || env.actor_id.trim() === "") {
+      this.audit.record("evolution.propose.rejected", env, { rid: input.rid, reason: "empty actor_id" });
+      throw new Error(`propose: anonymous or empty actor_id is not permitted (got '${env.actor_id}')`);
+    }
+    const actorRow = this.sql.db.prepare(
+      `SELECT kind FROM actors WHERE actor_id = ?`,
+    ).get(env.actor_id) as { kind: string } | undefined;
+    if (!actorRow) {
+      this.audit.record("evolution.propose.rejected", env, { rid: input.rid, reason: "actor not registered" });
+      throw new Error(`propose: actor '${env.actor_id}' is not registered in the actors table — register it first`);
+    }
+
     const resource = this.getResource(input.rid);
     if (!resource) throw new Error(`unknown resource ${input.rid}`);
+
+    // FIX 1a: critical resources are never proposable (they must be frozen per
+    // validateRiskPolicyCompat, but a direct-SQL insertion could bypass that).
+    // Belt-and-suspenders check here inside propose() itself.
+    // NOTE: error message includes "frozen" so existing tests matching /frozen/ still pass.
+    if (resource.risk_class === "critical") {
+      this.audit.record("evolution.propose.rejected", env, { rid: input.rid, reason: "critical resource — frozen by governance" });
+      throw new Error(`resource ${input.rid} is frozen/critical — proposals require operator unfreeze first`);
+    }
     if (resource.evolution_policy === "frozen") {
       this.audit.record("evolution.propose.rejected", env, { rid: input.rid, reason: "frozen" });
       throw new Error(`resource ${input.rid} is frozen — cannot evolve`);
     }
+
     const candidate_version = contentHash(input.candidate_content);
     const proposal_id = `prop_${randomUUID()}`;
     const now = new Date().toISOString();
-    this.sql.db.prepare(
-      `INSERT INTO proposals(proposal_id, resource_rid, candidate_version, candidate_content, justification, evidence_memory_ids_json, proposed_by, proposed_at, status)
-       VALUES (?,?,?,?,?,?,?,?,?)`,
-    ).run(
-      proposal_id, input.rid, candidate_version, input.candidate_content,
-      input.justification, JSON.stringify(input.evidence_memory_ids ?? []),
-      env.actor_id, now, "pending" satisfies ProposalStatus,
-    );
+
+    try {
+      this.sql.db.prepare(
+        `INSERT INTO proposals(proposal_id, resource_rid, candidate_version, candidate_content, justification, evidence_memory_ids_json, proposed_by, proposed_at, status)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+      ).run(
+        proposal_id, input.rid, candidate_version, input.candidate_content,
+        input.justification, JSON.stringify(input.evidence_memory_ids ?? []),
+        env.actor_id, now, "pending" satisfies ProposalStatus,
+      );
+    } catch (err) {
+      // FIX 5: The UNIQUE partial index on (resource_rid) WHERE status IN
+      // ('pending','evaluating') fires when a second active proposal is attempted
+      // for the same resource. Convert to a typed, catchable error so reconcileDrift
+      // (and other callers) can handle it cleanly with action="skip".
+      if (
+        err instanceof Error &&
+        (
+          (err as NodeJS.ErrnoException & { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE" ||
+          err.message.includes("UNIQUE constraint failed") ||
+          err.message.includes("idx_proposals_active_per_resource")
+        )
+      ) {
+        const typed = Object.assign(
+          new Error(`propose: resource '${input.rid}' already has an active pending or evaluating proposal — reject it before creating a new one`),
+          { code: "PROPOSAL_ALREADY_PENDING" as const },
+        );
+        this.audit.record("evolution.propose.rejected", env, { rid: input.rid, reason: "PROPOSAL_ALREADY_PENDING" });
+        throw typed;
+      }
+      throw err;
+    }
+
     this.audit.record("evolution.propose", env, { proposal_id, rid: input.rid, candidate_version });
     return this.getProposal(proposal_id)!;
   }
@@ -550,6 +699,26 @@ export class EvolutionEngine {
     return rows.map((r) => this.getProposal(r.proposal_id)!).filter(Boolean);
   }
 
+  /**
+   * WS10: Paginated version of listPending.
+   * Uses SQL LIMIT/OFFSET + a separate COUNT(*) — does NOT load all rows then slice.
+   * Intended for MCP boundary calls; clamp limit to [1, 200].
+   * FIX 1b: accepts optional envelope; when present, emits an "evolution.read" audit event.
+   */
+  listPendingPage(opts: PaginationOpts = {}, env?: Envelope): Page<Proposal> {
+    const { limit, offset } = clampPage(opts);
+    const countRow = this.sql.db
+      .prepare(`SELECT COUNT(*) as n FROM proposals WHERE status IN ('pending','evaluating')`)
+      .get() as { n: number };
+    const total = countRow.n;
+    const rows = this.sql.db
+      .prepare(`SELECT proposal_id FROM proposals WHERE status IN ('pending','evaluating') ORDER BY proposed_at ASC LIMIT ? OFFSET ?`)
+      .all(limit, offset) as Array<{ proposal_id: string }>;
+    const items = rows.map((r) => this.getProposal(r.proposal_id)!).filter(Boolean);
+    if (env) this.audit.record("evolution.read", env, { op: "list_pending", limit, offset, total });
+    return { items, total, limit, offset, has_more: offset + items.length < total };
+  }
+
   getProposal(proposal_id: string): Proposal | null {
     const row = this.sql.db.prepare(`SELECT * FROM proposals WHERE proposal_id = ?`).get(proposal_id) as
       | { proposal_id: string; resource_rid: string; candidate_version: string; candidate_content: string; justification: string; evidence_memory_ids_json: string; proposed_by: string; proposed_at: string; status: string; evaluation_json: string | null; decided_at: string | null; decided_by: string | null }
@@ -610,6 +779,290 @@ export class EvolutionEngine {
       }
     }
     return { registry, sources };
+  }
+
+  /**
+   * WS10 (FIX 3): Paginated drift detection — paginates over DRIFT ENTRIES, not the
+   * resource list. One resource with N sources yields N drift entries; all are
+   * subject to the limit cap so no single call can return more than `limit` entries.
+   *
+   * Strategy: scan all resources, collect all drift entries into a flat stream in
+   * memory, then apply limit/offset. For detectDrift use-cases the resource set is
+   * bounded (typically <1000), so a full scan + slice is acceptable. The cap ensures
+   * the MCP response size is always bounded.
+   *
+   * Returns:
+   *   - `items`: up to `limit` drift entries starting at `offset`
+   *   - `total`: total number of drift entries across ALL resources (the real total)
+   *   - `total_resources`: COUNT(resources) — for context
+   *   - `has_more`: whether more drift entries remain after this page
+   *
+   * FIX 1b: accepts optional envelope; when present emits an "evolution.read" audit event.
+   */
+  detectDriftPage(opts: PaginationOpts = {}, env?: Envelope): Page<{ rid: string; drift_kind: "registry" | "source"; on_disk_hash: string; recorded_hash?: string; source_path?: string; expected_version?: string }> & { total_resources: number; total_registry: number; total_sources: number } {
+    const { limit, offset } = clampPage(opts);
+    const resourceCountRow = this.sql.db.prepare(`SELECT COUNT(*) as n FROM resources`).get() as { n: number };
+    const total_resources = resourceCountRow.n;
+
+    // Single-pass scan: visit all resources (unavoidable — drift = on-disk hash comparison),
+    // but materialize AT MOST `limit` entries in `items`. Entries outside the window
+    // [offset, offset+limit) are counted only — never pushed into any array.
+    // Memory is O(limit) not O(total_drift_entries).
+    const allResources = this.sql.db
+      .prepare(`SELECT rid, current_version FROM resources ORDER BY rid`)
+      .all() as Array<{ rid: string; current_version: string }>;
+
+    type DriftEntry = { rid: string; drift_kind: "registry" | "source"; on_disk_hash: string; recorded_hash?: string; source_path?: string; expected_version?: string };
+    const items: DriftEntry[] = [];
+    let entryIndex = 0; // monotonic counter over all drift entries in iteration order
+    let total_registry = 0;
+    let total_sources = 0;
+
+    const maybeKeep = (entry: DriftEntry): void => {
+      if (entryIndex >= offset && entryIndex < offset + limit) {
+        items.push(entry);
+      }
+      entryIndex++;
+    };
+
+    for (const r of allResources) {
+      // Registry drift
+      const content = this.readVersion(r.rid, r.current_version);
+      if (content === null) {
+        total_registry++;
+        maybeKeep({ rid: r.rid, drift_kind: "registry", on_disk_hash: "MISSING", recorded_hash: r.current_version });
+        // FIX 2: registry-corrupt resource — skip source processing.
+        continue;
+      }
+      const actual = contentHash(content);
+      if (actual !== r.current_version) {
+        total_registry++;
+        maybeKeep({ rid: r.rid, drift_kind: "registry", on_disk_hash: actual, recorded_hash: r.current_version });
+        // FIX 2: hash mismatch — skip source processing for this resource.
+        continue;
+      }
+      // Source drift (only reached when registry is clean for this resource)
+      const sourceRows = this.sql.db.prepare(`SELECT source_path FROM resource_sources WHERE rid = ?`).all(r.rid) as Array<{ source_path: string }>;
+      for (const s of sourceRows) {
+        if (!existsSync(s.source_path)) {
+          total_sources++;
+          maybeKeep({ rid: r.rid, drift_kind: "source", on_disk_hash: "MISSING", source_path: s.source_path, expected_version: r.current_version });
+          continue;
+        }
+        try {
+          const text = readFileSync(s.source_path, "utf8");
+          const h = contentHash(text);
+          if (h !== r.current_version) {
+            total_sources++;
+            maybeKeep({ rid: r.rid, drift_kind: "source", on_disk_hash: h, source_path: s.source_path, expected_version: r.current_version });
+          }
+        } catch (err) {
+          total_sources++;
+          maybeKeep({ rid: r.rid, drift_kind: "source", on_disk_hash: `ERR:${(err as Error).message}`, source_path: s.source_path, expected_version: r.current_version });
+        }
+      }
+    }
+
+    const total = entryIndex; // == total_registry + total_sources
+    if (env) this.audit.record("evolution.read", env, { op: "detect_drift", limit, offset, total, total_registry, total_sources, total_resources });
+    return { items, total, total_registry, total_sources, total_resources, limit, offset, has_more: offset + items.length < total };
+  }
+
+  /**
+   * WS10: Drift reconciliation.
+   *
+   * Paginates over DRIFT ENTRIES (not the resource list — FIX 3). Collects all
+   * drift entries from a full resource scan, then applies limit/offset to the flat
+   * entry stream, so a single resource with N drifted sources never exceeds the cap.
+   *
+   * dryRun DEFAULTS TRUE — pass dryRun:false to create proposals.
+   *
+   * Rules (fail-closed, in priority order):
+   *   FIX 6: CRITICAL/FROZEN checked FIRST, before any source/registry handling.
+   *     → action="skip" unconditionally. No mutation. No surface.
+   *   FIX 2: REGISTRY DRIFT (hash mismatch or MISSING content file) checked next.
+   *     → action="surface". `continue` to NEXT RESOURCE — a registry-corrupt
+   *     resource must NEVER also receive a source proposal.
+   *   SOURCE DRIFT: action="propose" when !dryRun and no pending proposal for this
+   *     rid. Dedup via pre-enumerated Set + unique-index conflict handling.
+   *   SOURCE MISSING/UNREADABLE: action="surface" (never "propose").
+   *   Ambiguous/error: "surface" or "skip" (never "propose").
+   *
+   * Does NOT bypass Run #11's commit()/approve() gates — only creates proposals.
+   */
+  reconcileDrift(env: Envelope, opts: ReconcileDriftOpts = {}): ReconcileDriftResult {
+    // dryRun defaults to TRUE — must be explicitly false to create proposals.
+    const dryRun = opts.dryRun !== false;
+    const { limit, offset } = clampPage({ limit: opts.limit, offset: opts.offset });
+
+    // Determine the resource scope: all resources or a single rid.
+    const allResourceRows: Array<{ rid: string; current_version: string }> = opts.rid
+      ? (() => {
+          const r = this.sql.db.prepare(`SELECT rid, current_version FROM resources WHERE rid = ?`).get(opts.rid) as { rid: string; current_version: string } | undefined;
+          return r ? [r] : [];
+        })()
+      : this.sql.db.prepare(`SELECT rid, current_version FROM resources ORDER BY rid`).all() as Array<{ rid: string; current_version: string }>;
+
+    const total_resources = allResourceRows.length;
+
+    // Enumerate pending proposals once for fast dedup (pre-check; unique index is the authoritative guard).
+    const pendingRids = new Set<string>(
+      (this.sql.db.prepare(`SELECT resource_rid FROM proposals WHERE status IN ('pending','evaluating')`).all() as Array<{ resource_rid: string }>)
+        .map((r) => r.resource_rid),
+    );
+
+    // ---------- Phase 1: Single-pass scan — materialize AT MOST `limit` entries ----------
+    // Entries inside the page window [offset, offset+limit) are kept in full
+    // (with _sourceContent/_sourcePath for Phase 2 proposal creation).
+    // Entries outside the window are counted only — never pushed into any array.
+    // Memory is O(limit), not O(total_drift_entries).
+    type PlanEntry = ReconcilePlanEntry & { _sourceContent?: string; _sourcePath?: string };
+    const pageEntries: PlanEntry[] = []; // at most `limit` full entries
+    let planIndex = 0; // monotonic counter over ALL plan entries in iteration order
+
+    const planMaybeKeep = (entry: PlanEntry): void => {
+      if (planIndex >= offset && planIndex < offset + limit) {
+        pageEntries.push(entry);
+      }
+      planIndex++;
+    };
+
+    for (const r of allResourceRows) {
+      const resource = this.getResource(r.rid);
+      if (!resource) continue; // defensive
+
+      // FIX 6: Check frozen/critical FIRST — before any source or registry handling.
+      // Frozen/critical resources skip unconditionally, regardless of drift kind.
+      const isFrozenOrCritical =
+        resource.evolution_policy === "frozen" || resource.risk_class === "critical";
+      if (isFrozenOrCritical) {
+        // Still report IF there is actual drift, for operator visibility — always action="skip".
+        const hasRegistryDrift = (() => {
+          const c = this.readVersion(r.rid, r.current_version);
+          if (c === null) return true;
+          return contentHash(c) !== r.current_version;
+        })();
+        if (hasRegistryDrift) {
+          planMaybeKeep({ rid: r.rid, drift_kind: "registry", action: "skip", reason: "frozen/critical — reconciliation requires explicit operator action" });
+          continue; // FIX 2: skip source processing when registry drift detected
+        }
+        const sourceRows2 = this.sql.db.prepare(`SELECT source_path FROM resource_sources WHERE rid = ?`).all(r.rid) as Array<{ source_path: string }>;
+        for (const s of sourceRows2) {
+          let sourceDrifted = false;
+          try {
+            if (!existsSync(s.source_path)) { sourceDrifted = true; }
+            else { sourceDrifted = contentHash(readFileSync(s.source_path, "utf8")) !== r.current_version; }
+          } catch { sourceDrifted = true; }
+          if (sourceDrifted) {
+            planMaybeKeep({ rid: r.rid, drift_kind: "source", action: "skip", reason: "frozen/critical — reconciliation requires explicit operator action" });
+          }
+        }
+        continue; // skip the normal registry+source block below
+      }
+
+      // --- Registry drift (FIX 2: continue to next resource if registry is corrupt) ---
+      const content = this.readVersion(r.rid, r.current_version);
+      if (content === null) {
+        planMaybeKeep({ rid: r.rid, drift_kind: "registry", action: "surface", reason: "stored version content missing — manual review required" });
+        continue; // FIX 2: do NOT process source drift for a registry-corrupt resource
+      }
+      const actual = contentHash(content);
+      if (actual !== r.current_version) {
+        planMaybeKeep({ rid: r.rid, drift_kind: "registry", action: "surface", reason: `registry hash mismatch — possible tamper/corruption; manual review (on_disk: ${actual}, recorded: ${r.current_version})` });
+        continue; // FIX 2: do NOT process source drift when registry hash is wrong
+      }
+
+      // --- Source drift (only reached when registry is clean) ---
+      const sourceRows = this.sql.db.prepare(`SELECT source_path FROM resource_sources WHERE rid = ?`).all(r.rid) as Array<{ source_path: string }>;
+      for (const s of sourceRows) {
+        if (!existsSync(s.source_path)) {
+          planMaybeKeep({ rid: r.rid, drift_kind: "source", action: "surface", reason: `source file missing at ${s.source_path}; manual review required` });
+          continue;
+        }
+
+        let sourceContent: string;
+        let sourceHash: string;
+        try {
+          sourceContent = readFileSync(s.source_path, "utf8");
+          sourceHash = contentHash(sourceContent);
+        } catch (err) {
+          planMaybeKeep({ rid: r.rid, drift_kind: "source", action: "surface", reason: `source read error at ${s.source_path}: ${(err as Error).message}` });
+          continue;
+        }
+
+        if (sourceHash === r.current_version) continue; // no drift
+
+        // Fast-path dedup check (proposal already pending for this rid).
+        if (pendingRids.has(r.rid)) {
+          planMaybeKeep({ rid: r.rid, drift_kind: "source", action: "skip", reason: "proposal already pending — skipping to avoid duplicate" });
+          continue;
+        }
+
+        // Record as "propose" candidate — only entries in the page window carry
+        // _sourceContent/_sourcePath (needed by Phase 2). Out-of-window entries
+        // are counted via planMaybeKeep without being retained.
+        // Mark rid as pendingRids so multiple drifted sources on the same rid
+        // only emit one "propose" entry (others become "skip").
+        pendingRids.add(r.rid);
+        planMaybeKeep({
+          rid: r.rid,
+          drift_kind: "source",
+          action: "propose",
+          reason: `source file ${s.source_path} diverged from recorded version`,
+          _sourceContent: sourceContent,
+          _sourcePath: s.source_path,
+        });
+      }
+    }
+
+    // total_drifts is the TRUE total — planIndex after the full scan.
+    const total_drifts_all = planIndex;
+
+    // ---------- Phase 2: Apply proposals only for entries in the page ----------
+    const planned: ReconcilePlanEntry[] = [];
+    for (const entry of pageEntries) {
+      if (!dryRun && entry.action === "propose" && entry._sourceContent !== undefined) {
+        let proposalId: string | undefined;
+        try {
+          const proposal = this.propose(env, {
+            rid: entry.rid,
+            candidate_content: entry._sourceContent,
+            justification: `reconcileDrift: source file ${entry._sourcePath ?? "unknown"} diverged from recorded version`,
+          });
+          proposalId = proposal.proposal_id;
+        } catch (err) {
+          // FIX 5: unique-index conflict → treat as "already pending" skip.
+          if (err instanceof Error && (err as NodeJS.ErrnoException & { code?: string }).code === "PROPOSAL_ALREADY_PENDING") {
+            planned.push({ rid: entry.rid, drift_kind: "source", action: "skip", reason: "proposal already pending (unique-index conflict)" });
+            continue;
+          }
+          // Other errors: surface fail-closed (don't rethrow from reconcile loop).
+          planned.push({ rid: entry.rid, drift_kind: "source", action: "surface", reason: `propose failed: ${err instanceof Error ? err.message : String(err)}` });
+          continue;
+        }
+        // Strip internal _source* fields from the public entry.
+        planned.push({ rid: entry.rid, drift_kind: "source", action: "propose", reason: entry.reason, ...(proposalId ? { proposal_id: proposalId } : {}) });
+      } else {
+        // dryRun, or non-propose entries (surface/skip/registry): emit as-is without _source* fields.
+        const { _sourceContent: _c, _sourcePath: _p, ...publicEntry } = entry;
+        void _c; void _p;
+        planned.push(publicEntry);
+      }
+    }
+
+    this.audit.record("evolution.reconcile_drift", env, {
+      dryRun, limit, offset, total_resources, total_drifts: total_drifts_all, applied: !dryRun,
+    });
+
+    return {
+      planned,
+      total_drifts: total_drifts_all, // total drift entries (all pages)
+      total_resources,
+      applied: !dryRun,
+      limit,
+      offset,
+      has_more: offset + pageEntries.length < total_drifts_all,
+    };
   }
 
   // ---------- Seeds ----------
@@ -797,6 +1250,23 @@ export class EvolutionEngine {
   private versionPath(rid: string, version: string): string {
     return join(this.resourcesDir, sanitizeRid(rid), `${version}.content`);
   }
+}
+
+// ---------- WS10: Pagination helper ----------
+
+const MCP_PAGE_CAP = 200;
+const MCP_PAGE_DEFAULT = 50;
+
+/**
+ * Clamp pagination opts for the MCP boundary.
+ * limit  → clamped to [1, 200], default 50 when absent or 0
+ * offset → default 0, clamped to >= 0
+ */
+export function clampPage(opts: PaginationOpts): { limit: number; offset: number } {
+  const rawLimit = opts.limit ?? MCP_PAGE_DEFAULT;
+  const limit = Math.min(Math.max(rawLimit < 1 ? MCP_PAGE_DEFAULT : rawLimit, 1), MCP_PAGE_CAP);
+  const offset = Math.max(opts.offset ?? 0, 0);
+  return { limit, offset };
 }
 
 /**

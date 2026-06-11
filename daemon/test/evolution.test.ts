@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -213,6 +213,17 @@ describe("TE-EV-1 — approve() self-commit prevention for hitl-only proposals",
 
   afterAll(() => { sql.close(); rmSync(dir, { recursive: true, force: true }); });
 
+  // WS10 Round 3 (Fix 5): the UNIQUE partial index on (resource_rid) WHERE status IN
+  // ('pending','evaluating') means each test must clean up its proposals before the next
+  // test can create one on the same resource. Mark any remaining active proposals as
+  // 'superseded' so the unique constraint is clear for the next it() block.
+  afterEach(() => {
+    sql.db.prepare(
+      `UPDATE proposals SET status = 'superseded', decided_at = datetime('now'), decided_by = 'test-cleanup'
+         WHERE resource_rid = 'resource:test.hitl.doc' AND status IN ('pending', 'evaluating')`,
+    ).run();
+  });
+
   it("approve() on hitl-only proposal with NO approved HITL row -> committed:false (self-approve blocked)", async () => {
     const prop = engine.propose(env, {
       rid: "resource:test.hitl.doc",
@@ -334,6 +345,8 @@ function makeIsolatedEngine(baseDir: string, label: string) {
   const dir = mkdtempSync(join(baseDir, `eights-${label}-`));
   const sql = new SqliteStore(join(dir, "state.db"));
   sql.migrate();
+  // WS10 Round 3 (Fix 1a): actors table lookup in propose() — register the TE-EV-2 actor.
+  registerHumanActor(sql, "test-ev2");
   const audit = new AuditEngine(sql, join(dir, "events"));
   const policy = new PolicyEngine(sql);
   const engine = new EvolutionEngine(sql, join(dir, "resources"), policy, audit);
