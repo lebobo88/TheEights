@@ -14,6 +14,7 @@ import { nanoid } from "nanoid";
 import type { SqliteStore } from "../stores/sqlite.js";
 import type { AuditEngine } from "./audit.js";
 import type { Envelope } from "../schemas/envelope.js";
+import { verifyOperatorCapability } from "../auth/capability.js";
 
 export type CeilingKind = "iteration" | "depth" | "failure";
 export type BudgetAction = "proceed" | "downgrade" | "block";
@@ -72,8 +73,86 @@ export class GovernanceStateEngine {
     private readonly audit: AuditEngine,
   ) {}
 
-  /** Set or update a per-run cap. Operators may call this at workflow intake. */
+  /**
+   * Enforce operator capability on a governance op.
+   *
+   * Checks (in order):
+   *   1. capability_token present in envelope
+   *   2. token verifies (HMAC, schema, expiry, TTL, field checks)
+   *   3. token.actor_id === env.actor_id (bind token actor to envelope actor)
+   *   4. token.actor_id registered in actors table with kind='human'
+   *   5. single-use: sig.value (jti) not already consumed (replay prevention)
+   *      → insert into consumed_capabilities transactionally
+   *
+   * Throws a descriptive Error on any failure. Reason strings never include token values.
+   */
+  private requireOperatorCapability(
+    env: Envelope,
+    capability: string,
+    resourceId: string,
+    workflowId: string,
+    opLabel: string,
+  ): void {
+    const rawEnv = env as Record<string, unknown>;
+    const token = rawEnv["capability_token"];
+    if (token === undefined || token === null) {
+      this.audit.record("governance.auth.rejected", env, { op: opLabel, reason: "missing capability_token" });
+      throw new Error(`${opLabel} requires an operator capability token (capability_token missing in envelope)`);
+    }
+    const result = verifyOperatorCapability(token, {
+      expectedCapability: capability,
+      expectedWorkflowId: workflowId,
+      expectedResourceId: resourceId,
+    });
+    if (!result.valid) {
+      this.audit.record("governance.auth.rejected", env, { op: opLabel, reason: result.reason });
+      throw new Error(`${opLabel} refused: capability token invalid (${result.reason})`);
+    }
+    // Token actor MUST equal envelope's claimed actor (Fix #2).
+    if (result.actor_id !== env.actor_id) {
+      this.audit.record("governance.auth.rejected", env, { op: opLabel, reason: "actor_id mismatch" });
+      throw new Error(`${opLabel} refused: token actor_id does not match envelope actor_id`);
+    }
+    const actorId = result.actor_id;
+    // actors-table binding: actor_id must exist with kind='human'.
+    const actorRow = this.sql.db.prepare(
+      `SELECT kind FROM actors WHERE actor_id = ?`,
+    ).get(actorId) as { kind: string } | undefined;
+    if (!actorRow) {
+      this.audit.record("governance.auth.rejected", env, { op: opLabel, reason: "actor not registered" });
+      throw new Error(`${opLabel} refused: token actor_id is not registered in actors table`);
+    }
+    if (actorRow.kind !== "human") {
+      this.audit.record("governance.auth.rejected", env, { op: opLabel, reason: "actor_kind not human" });
+      throw new Error(`${opLabel} refused: token actor must have kind=human in actors table`);
+    }
+    // Single-use: use the jti returned by the VERIFIER (from the normalized, HMAC-verified
+    // payload) — NOT a re-extraction from the raw token. A hostile getter/toJSON on the raw
+    // token could return a different jti at extraction time, allowing replay. result.jti is
+    // the jti that was proven-correct by the HMAC check (Fix 6.3).
+    const jti = result.jti;
+    if (!jti) {
+      this.audit.record("governance.auth.rejected", env, { op: opLabel, reason: "jti unavailable from verifier" });
+      throw new Error(`${opLabel} refused: capability token is not replayable (jti unavailable)`);
+    }
+    const consumed_at = new Date().toISOString();
+    const inserted = this.sql.db.prepare(
+      `INSERT OR IGNORE INTO consumed_capabilities(jti, consumed_at, op) VALUES (?,?,?)`,
+    ).run(jti, consumed_at, opLabel);
+    if (inserted.changes === 0) {
+      this.audit.record("governance.auth.rejected", env, { op: opLabel, reason: "token already consumed (replay)" });
+      throw new Error(`${opLabel} refused: capability token has already been used (replay prevented)`);
+    }
+    this.audit.record("governance.auth.accepted", env, { op: opLabel, actor_id: actorId, capability });
+  }
+
+  /**
+   * Set or update a per-run cap. Requires a "governance.cap.set" operator capability
+   * bound to run_id (resource_id = run_id, workflow_id = run_id).
+   * Gated so an adversary cannot weaken governance ceilings without a signed token.
+   */
   setCap(env: Envelope, run_id: string, kind: "budget" | CeilingKind, cap: number): void {
+    this.requireOperatorCapability(env, "governance.cap.set", run_id, run_id, "setCap");
     this.sql.db.prepare(
       `INSERT INTO governance_caps(run_id, kind, cap) VALUES (?,?,?)
        ON CONFLICT(run_id, kind) DO UPDATE SET cap = excluded.cap`,
@@ -152,6 +231,13 @@ export class GovernanceStateEngine {
   }
 
   hitlResolve(env: Envelope, request_id: string, decision: "approved" | "rejected", note?: unknown): HitlRequestRow {
+    // Fetch the HITL row first so we can use its run_id as workflow_id in the capability binding.
+    const existing = this.sql.db.prepare(
+      `SELECT run_id FROM hitl_queue WHERE request_id = ?`,
+    ).get(request_id) as { run_id: string | null } | undefined;
+    const workflowId = existing?.run_id ?? request_id;
+    // Enforce operator capability — fail closed: no valid token means no resolution.
+    this.requireOperatorCapability(env, "hitl.resolve", request_id, workflowId, "hitlResolve");
     const resolved_at = new Date().toISOString();
     this.sql.db.prepare(
       `UPDATE hitl_queue SET status = ?, resolved_at = ?, resolved_by = ?, decision_json = ?
@@ -196,12 +282,24 @@ export class GovernanceStateEngine {
   breakerOutcome(env: Envelope, node_id: string, outcome: "success" | "failure"): BreakerStatus {
     const now = new Date().toISOString();
     if (outcome === "success") {
-      this.sql.db.prepare(
-        `INSERT INTO breaker_state(node_id, consecutive_failures, tripped) VALUES (?, 0, 0)
-         ON CONFLICT(node_id) DO UPDATE SET consecutive_failures = 0, tripped = 0, tripped_at = NULL`,
-      ).run(node_id);
+      // If the breaker is currently tripped, a "success" outcome would clear it.
+      // Capability check + clear are wrapped in a single transaction to prevent a
+      // TOCTOU race where a concurrent trip could be cleared without a fresh token
+      // (Fix #1 atomic: the check and the conditional clear are one unit of work).
+      const status = this.sql.db.transaction(() => {
+        const current = this.breakerStatus(node_id);
+        if (current.tripped) {
+          // requireOperatorCapability throws on failure, rolling back the transaction.
+          this.requireOperatorCapability(env, "governance.breaker.reset", node_id, node_id, "breakerOutcome(success/untrip)");
+        }
+        this.sql.db.prepare(
+          `INSERT INTO breaker_state(node_id, consecutive_failures, tripped) VALUES (?, 0, 0)
+           ON CONFLICT(node_id) DO UPDATE SET consecutive_failures = 0, tripped = 0, tripped_at = NULL`,
+        ).run(node_id);
+        return this.breakerStatus(node_id);
+      })();
       this.audit.record("governance.breaker.success", env, { node_id });
-      return this.breakerStatus(node_id);
+      return status;
     }
     const status = this.breakerStatus(node_id);
     const next = status.consecutive_failures + 1;
@@ -220,6 +318,9 @@ export class GovernanceStateEngine {
   }
 
   breakerReset(env: Envelope, node_id: string): BreakerStatus {
+    // Enforce operator capability — node_id is the resource; use node_id as workflow_id too
+    // (breaker resets are node-scoped, not workflow-scoped).
+    this.requireOperatorCapability(env, "governance.breaker.reset", node_id, node_id, "breakerReset");
     this.sql.db.prepare(
       `INSERT INTO breaker_state(node_id, consecutive_failures, tripped) VALUES (?, 0, 0)
        ON CONFLICT(node_id) DO UPDATE SET consecutive_failures = 0, tripped = 0, tripped_at = NULL`,

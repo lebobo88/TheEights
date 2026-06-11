@@ -12,6 +12,73 @@ import { NoopEval } from "../src/engines/eval/noop.js";
 import { WriteRouter } from "../src/engines/writeback.js";
 import type { EvalAdapter } from "../src/engines/eval/registry.js";
 import type { Envelope } from "../src/schemas/envelope.js";
+import { mintOperatorCapability } from "../src/auth/capability.js";
+
+// ---------------------------------------------------------------------------
+// Test-only operator key helpers.
+// ---------------------------------------------------------------------------
+const TEST_OP_KEY = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+const TEST_KEY_ID = "test-key";
+
+/** Register an actor as kind='human' so the actors-table binding passes. */
+function registerHumanActor(sql: SqliteStore, actor_id: string): void {
+  sql.db.prepare(
+    `INSERT OR IGNORE INTO actors(actor_id, kind, created_at) VALUES (?, 'human', datetime('now'))`,
+  ).run(actor_id);
+}
+
+/**
+ * Build an Envelope that carries a valid operator capability token.
+ * Sets HYDRA_OPERATOR_KEY for the duration of this call.
+ */
+function opEnvWith(
+  base: Envelope,
+  capability: string,
+  resourceId: string,
+  workflowId: string,
+): Envelope {
+  const prev = process.env["HYDRA_OPERATOR_KEY"];
+  const prevId = process.env["HYDRA_OPERATOR_KEY_ID"];
+  process.env["HYDRA_OPERATOR_KEY"] = TEST_OP_KEY;
+  process.env["HYDRA_OPERATOR_KEY_ID"] = TEST_KEY_ID;
+  try {
+    const token = mintOperatorCapability({
+      v: 1,
+      actor_id: base.actor_id,
+      actor_kind: "human",
+      capability,
+      resource_id: resourceId,
+      workflow_id: workflowId,
+      issued_at: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    });
+    return { ...base, capability_token: token } as unknown as Envelope;
+  } finally {
+    if (prev === undefined) delete process.env["HYDRA_OPERATOR_KEY"];
+    else process.env["HYDRA_OPERATOR_KEY"] = prev;
+    if (prevId === undefined) delete process.env["HYDRA_OPERATOR_KEY_ID"];
+    else process.env["HYDRA_OPERATOR_KEY_ID"] = prevId;
+  }
+}
+
+/**
+ * Set HYDRA_OPERATOR_KEY for the duration of a synchronous fn call.
+ * Used when verifyOperatorCapability is called at call-time (engine methods read env at verify time).
+ */
+function withOpKey<T>(fn: () => T): T {
+  const prev = process.env["HYDRA_OPERATOR_KEY"];
+  const prevId = process.env["HYDRA_OPERATOR_KEY_ID"];
+  process.env["HYDRA_OPERATOR_KEY"] = TEST_OP_KEY;
+  process.env["HYDRA_OPERATOR_KEY_ID"] = TEST_KEY_ID;
+  try {
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env["HYDRA_OPERATOR_KEY"];
+    else process.env["HYDRA_OPERATOR_KEY"] = prev;
+    if (prevId === undefined) delete process.env["HYDRA_OPERATOR_KEY_ID"];
+    else process.env["HYDRA_OPERATOR_KEY_ID"] = prevId;
+  }
+}
 
 describe("evolution — RSPL + SEPL + risk routing", () => {
   let dir: string;
@@ -26,6 +93,8 @@ describe("evolution — RSPL + SEPL + risk routing", () => {
     dir = mkdtempSync(join(tmpdir(), "eights-evo-"));
     sql = new SqliteStore(join(dir, "state.db"));
     sql.migrate();
+    // Register the test actor as human so capability enforcement passes.
+    registerHumanActor(sql, "test");
     const audit = new AuditEngine(sql, join(dir, "events"));
     const policy = new PolicyEngine(sql);
     engine = new EvolutionEngine(sql, join(dir, "resources"), policy, audit);
@@ -77,7 +146,9 @@ describe("evolution — RSPL + SEPL + risk routing", () => {
   it("rolls back to a prior version", async () => {
     const r = engine.getResource("resource:eights.template.docs-prompt")!;
     const first = r.versions[0]!;
-    const result = await engine.rollback(env, r.rid, first.version);
+    // resource_id = rid@to_version (binds token to exact rollback target, Fix #6)
+    const rollbackEnv = opEnvWith(env, "evolution.rollback", `${r.rid}@${first.version}`, r.rid);
+    const result = await withOpKey(() => engine.rollback(rollbackEnv, r.rid, first.version));
     expect(result.current_version).toBe(first.version);
   });
 
@@ -118,6 +189,9 @@ describe("TE-EV-1 — approve() self-commit prevention for hitl-only proposals",
     dir = mkdtempSync(join(tmpdir(), "eights-ev1-"));
     sql = new SqliteStore(join(dir, "state.db"));
     sql.migrate();
+    // Register both test actors as human so capability enforcement passes.
+    registerHumanActor(sql, "test-ev1");
+    registerHumanActor(sql, "operator-rob");
     const audit = new AuditEngine(sql, join(dir, "events"));
     const policy = new PolicyEngine(sql);
     governance = new GovernanceStateEngine(sql, audit);
@@ -151,8 +225,9 @@ describe("TE-EV-1 — approve() self-commit prevention for hitl-only proposals",
     expect(commitResult.committed).toBe(false);
     expect(commitResult.reason).toMatch(/hitl-only/);
 
-    // approve() directly — no HITL row has been resolved yet
-    const approveResult = await engine.approve(env, prop.proposal_id);
+    // approve() directly — no HITL row has been resolved yet; still needs a token to reach that check
+    const approveEnv = opEnvWith(env, "evolution.approve", prop.proposal_id, prop.proposal_id);
+    const approveResult = await withOpKey(() => engine.approve(approveEnv, prop.proposal_id));
     expect(approveResult.committed).toBe(false);
     expect(approveResult.reason).toMatch(/human-approved HITL/);
 
@@ -183,11 +258,13 @@ describe("TE-EV-1 — approve() self-commit prevention for hitl-only proposals",
     ).get(prop.proposal_id) as { request_id: string } | undefined;
     expect(row).toBeDefined();
 
-    // Human resolves it
-    governance.hitlResolve(humanEnv, row!.request_id, "approved");
+    // Human resolves it — needs a capability token bound to the request_id
+    const resolveEnv = opEnvWith(humanEnv, "hitl.resolve", row!.request_id, row!.request_id);
+    withOpKey(() => governance.hitlResolve(resolveEnv, row!.request_id, "approved"));
 
-    // Now approve() should commit
-    const approveResult = await engine.approve(env, prop.proposal_id);
+    // Now approve() should commit — needs a capability token bound to the proposal_id
+    const approveEnv = opEnvWith(env, "evolution.approve", prop.proposal_id, prop.proposal_id);
+    const approveResult = await withOpKey(() => engine.approve(approveEnv, prop.proposal_id));
     expect(approveResult.committed).toBe(true);
     expect(approveResult.version).toBeTruthy();
   });
@@ -201,7 +278,8 @@ describe("TE-EV-1 — approve() self-commit prevention for hitl-only proposals",
     // Do NOT call engine.evaluate() or engine.commit() — no HITL row created.
     // The HITL guard fires before the eval guard (correct: missing HITL is the
     // primary gate; missing eval would also block but is secondary).
-    const approveResult = await engine.approve(env, prop.proposal_id);
+    const approveEnv3 = opEnvWith(env, "evolution.approve", prop.proposal_id, prop.proposal_id);
+    const approveResult = await withOpKey(() => engine.approve(approveEnv3, prop.proposal_id));
     expect(approveResult.committed).toBe(false);
     expect(approveResult.reason).toMatch(/human-approved HITL/);
   });
@@ -217,10 +295,12 @@ describe("TE-EV-1 — approve() self-commit prevention for hitl-only proposals",
       kind: "evolution.approve",
       payload: { proposal_id: prop.proposal_id, rid: "resource:test.hitl.doc" },
     });
-    governance.hitlResolve(humanEnv, hitlRow.request_id, "approved");
+    const resolveEnv2 = opEnvWith(humanEnv, "hitl.resolve", hitlRow.request_id, hitlRow.request_id);
+    withOpKey(() => governance.hitlResolve(resolveEnv2, hitlRow.request_id, "approved"));
 
     // Still no evaluation — should be rejected on eval check
-    const approveResult = await engine.approve(env, prop.proposal_id);
+    const approveEnv4 = opEnvWith(env, "evolution.approve", prop.proposal_id, prop.proposal_id);
+    const approveResult = await withOpKey(() => engine.approve(approveEnv4, prop.proposal_id));
     expect(approveResult.committed).toBe(false);
     expect(approveResult.reason).toMatch(/evaluate before approve/);
   });

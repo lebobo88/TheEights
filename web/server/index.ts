@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import { EightsClient, atlasEnvelope } from "./eights-client.ts";
 import { allowTool, READ_ONLY_TOOLS } from "./whitelist.ts";
 import { allowWriteTool, WRITE_TOOLS, type WriteTool } from "./write-whitelist.ts";
-import { operatorEnvelope, sessionToken, verifyToken } from "./operator.ts";
+import { operatorEnvelope, mintHitlResolveCapability, sessionToken, verifyToken } from "./operator.ts";
 
 const HOST = "127.0.0.1"; // loopback only — never 0.0.0.0
 const PREFERRED_PORT = Number(process.env.EIGHTS_ATLAS_BRIDGE_PORT ?? 8788);
@@ -127,7 +127,7 @@ async function readTool<T = unknown>(tool: string, extra: Record<string, unknown
 /* ---------------- GOVERNED WRITE PATH ----------------
    Separate from readTool by construction:
      - distinct write allowlist (exactly {approve,reject,rollback})
-     - distinct OPERATOR envelope (actor operator-rob, domain governance, minimal
+     - distinct OPERATOR envelope (actor EIGHTS_OPERATOR_ACTOR_ID, domain governance, minimal
        scope) — NOT the read-only eights-atlas envelope
      - goes through the SAME serialize() mutex + busy-retry as reads (one in-flight
        call to the shared sqlite connection)
@@ -145,12 +145,55 @@ async function writeTool<T = unknown>(
   }
   await ensureClient();
   return serialize(async () => {
+    // Mint a fresh per-action capability token server-side (Fix #5 / WS-AUTH).
+    // Each retry mints a fresh token (new jti) to avoid replay rejection on retry.
     try {
-      return await client.call<T>(`eights.${tool}`, { ...args, envelope: operatorEnvelope() });
+      return await client.call<T>(`eights.${tool}`, { ...args, envelope: operatorEnvelope(tool, args) });
     } catch (e) {
       if (!isBusy(e)) throw e;
       await sleep(120);
-      return client.call<T>(`eights.${tool}`, { ...args, envelope: operatorEnvelope() });
+      return client.call<T>(`eights.${tool}`, { ...args, envelope: operatorEnvelope(tool, args) });
+    }
+  });
+}
+
+/* ---------------- HITL RESOLVE PATH ----------------
+   Dedicated path for resolving a pending evolution.approve HITL row before the
+   evolution.approve call. This is NOT a write-allowlist tool (governance.hitl.resolve
+   is separate from the three evolution write tools) so it goes through its own
+   narrow function rather than writeTool. The operator envelope uses
+   mintHitlResolveCapability(requestId) which mints capability="hitl.resolve" bound
+   exactly to this request_id — matching how the CLI does it. */
+async function resolveHitlRow(requestId: string): Promise<void> {
+  await ensureClient();
+  const env = operatorEnvelope();
+  const capToken = mintHitlResolveCapability(requestId);
+  if (capToken !== null) {
+    (env as Record<string, unknown>).capability_token = capToken;
+  }
+  await serialize(async () => {
+    try {
+      return await client.call("eights.governance.hitl.resolve", {
+        request_id: requestId,
+        decision: "approved",
+        note: "operator approved via Atlas",
+        envelope: env,
+      });
+    } catch (e) {
+      if (!isBusy(e)) throw e;
+      await sleep(120);
+      // Mint a fresh capability token on retry (new jti) to avoid single-use replay rejection.
+      const retryEnv = operatorEnvelope();
+      const retryToken = mintHitlResolveCapability(requestId);
+      if (retryToken !== null) {
+        (retryEnv as Record<string, unknown>).capability_token = retryToken;
+      }
+      return client.call("eights.governance.hitl.resolve", {
+        request_id: requestId,
+        decision: "approved",
+        note: "operator approved via Atlas",
+        envelope: retryEnv,
+      });
     }
   });
 }
@@ -439,7 +482,7 @@ function json(res: ServerResponse, status: number, body: unknown): void {
    POST-only. Each one: verify CSRF token -> validate args -> server-side
    risk/frozen guard -> invoke the GOVERNED eights.evolution.* tool with the
    operator envelope -> return a structured result {ok, action, ..., result}.
-   The daemon audits every action under actor operator-rob. */
+   The daemon audits every action under actor EIGHTS_OPERATOR_ACTOR_ID. */
 
 /** Shared CSRF gate for every write. Returns true iff the X-Atlas-Token header
     matches the session token; otherwise writes a 403 and returns false. */
@@ -471,8 +514,25 @@ async function handleApprove(
     json(res, 409, { error: FROZEN_REFUSAL, code: "FROZEN", rid, risk: meta.risk_class, policy: meta.evolution_policy });
     return;
   }
+  // For hitl-only proposals a pending evolution.approve HITL row must be resolved
+  // BEFORE calling evolution.approve (the daemon enforces this). Mirror the CLI flow:
+  // Step 1: find a pending evolution.approve HITL row whose payload references this proposal_id.
+  // Step 2: if found, resolve it with a fresh hitl.resolve capability token.
+  // Step 3: call evolution.approve as usual (no change to the existing approve call).
+  // For auto / auto-low-risk proposals no HITL row exists — skip the resolve step.
+  const hitlList = await readTool<Array<{
+    request_id?: string;
+    kind?: string;
+    payload?: { proposal_id?: string };
+  }>>("governance.hitl.list", { status: "pending" });
+  const hitlRow = (Array.isArray(hitlList) ? hitlList : []).find(
+    (r) => r.kind === "evolution.approve" && r.payload?.proposal_id === proposalId,
+  );
+  if (hitlRow?.request_id) {
+    await resolveHitlRow(hitlRow.request_id);
+  }
   const result = await writeTool("evolution.approve", { proposal_id: proposalId });
-  json(res, 200, { ok: true, action: "approve", proposal_id: proposalId, rid, result });
+  json(res, 200, { ok: true, action: "approve", proposal_id: proposalId, rid, result, hitl_resolved: hitlRow?.request_id ?? null });
 }
 
 async function handleReject(
@@ -598,7 +658,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         // Same-origin only (Host already verified loopback above). Hands the
         // browser the per-session CSRF token it must echo as X-Atlas-Token on
         // every write. Never set on a write response; only mintable via this GET.
-        json(res, 200, { token: sessionToken(), actor: "operator-rob" });
+        json(res, 200, { token: sessionToken(), actor: process.env["EIGHTS_OPERATOR_ACTOR_ID"] ?? "eights.operator" });
         return;
       case "/api/atlas/live":
         json(res, 200, await buildSnapshot());
@@ -701,7 +761,7 @@ async function main(): Promise<void> {
     process.stderr.write(
       `[atlas-bridge] MCP bridge listening on http://${HOST}:${boundPort}${rolled} ` +
         `(loopback only · ${READ_ONLY_TOOLS.length} read tools [eights-atlas envelope] · ` +
-        `${WRITE_TOOLS.length} governed write tools [operator-rob envelope, CSRF-gated])\n`,
+        `${WRITE_TOOLS.length} governed write tools [${process.env["EIGHTS_OPERATOR_ACTOR_ID"] ?? "eights.operator"} envelope, CSRF-gated])\n`,
     );
   });
 }

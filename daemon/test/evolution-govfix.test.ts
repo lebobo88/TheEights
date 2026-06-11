@@ -22,6 +22,55 @@ import { WriteRouter } from "../src/engines/writeback.js";
 import { EvalRegistry } from "../src/engines/eval/registry.js";
 import type { EvalAdapter } from "../src/engines/eval/registry.js";
 import type { Envelope } from "../src/schemas/envelope.js";
+import { mintOperatorCapability } from "../src/auth/capability.js";
+
+// ---------------------------------------------------------------------------
+// Operator capability helpers (same pattern as evolution.test.ts)
+// ---------------------------------------------------------------------------
+const TEST_OP_KEY = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+const TEST_KEY_ID = "test-key";
+
+function registerHumanActor(sql: SqliteStore, actor_id: string): void {
+  sql.db.prepare(
+    `INSERT OR IGNORE INTO actors(actor_id, kind, created_at) VALUES (?, 'human', datetime('now'))`,
+  ).run(actor_id);
+}
+
+function opEnvWith(base: Envelope, capability: string, resourceId: string, workflowId: string): Envelope {
+  const prev = process.env["HYDRA_OPERATOR_KEY"];
+  const prevId = process.env["HYDRA_OPERATOR_KEY_ID"];
+  process.env["HYDRA_OPERATOR_KEY"] = TEST_OP_KEY;
+  process.env["HYDRA_OPERATOR_KEY_ID"] = TEST_KEY_ID;
+  try {
+    const token = mintOperatorCapability({
+      v: 1, actor_id: base.actor_id, actor_kind: "human",
+      capability, resource_id: resourceId, workflow_id: workflowId,
+      issued_at: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    });
+    return { ...base, capability_token: token } as unknown as Envelope;
+  } finally {
+    if (prev === undefined) delete process.env["HYDRA_OPERATOR_KEY"];
+    else process.env["HYDRA_OPERATOR_KEY"] = prev;
+    if (prevId === undefined) delete process.env["HYDRA_OPERATOR_KEY_ID"];
+    else process.env["HYDRA_OPERATOR_KEY_ID"] = prevId;
+  }
+}
+
+function withOpKey<T>(fn: () => T): T {
+  const prev = process.env["HYDRA_OPERATOR_KEY"];
+  const prevId = process.env["HYDRA_OPERATOR_KEY_ID"];
+  process.env["HYDRA_OPERATOR_KEY"] = TEST_OP_KEY;
+  process.env["HYDRA_OPERATOR_KEY_ID"] = TEST_KEY_ID;
+  try {
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env["HYDRA_OPERATOR_KEY"];
+    else process.env["HYDRA_OPERATOR_KEY"] = prev;
+    if (prevId === undefined) delete process.env["HYDRA_OPERATOR_KEY_ID"];
+    else process.env["HYDRA_OPERATOR_KEY_ID"] = prevId;
+  }
+}
 
 const env: Envelope = {
   tenant_id: "local", actor_id: "test-govfix", project_id: "TheEights",
@@ -41,6 +90,9 @@ beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "eights-govfix-"));
   sql = new SqliteStore(join(dir, "state.db"));
   sql.migrate();
+  // Register test actors as human for capability enforcement.
+  registerHumanActor(sql, "test-govfix");
+  registerHumanActor(sql, "operator-rob");
   audit = new AuditEngine(sql, join(dir, "events"));
   const policy = new PolicyEngine(sql);
   governance = new GovernanceStateEngine(sql, audit);
@@ -110,11 +162,13 @@ describe("Fix #1 — 'evolution.approve' is a reserved HITL kind", () => {
     expect(row).toBeDefined();
     expect(row!.status).toBe("pending");
 
-    // Human resolves it
-    governance.hitlResolve(humanEnv, row!.request_id, "approved");
+    // Human resolves it — needs operator capability bound to the request_id
+    const resolveEnv = opEnvWith(humanEnv, "hitl.resolve", row!.request_id, row!.request_id);
+    withOpKey(() => governance.hitlResolve(resolveEnv, row!.request_id, "approved"));
 
-    // approve() should now commit
-    const result = await evolution.approve(env, prop.proposal_id);
+    // approve() should now commit — needs operator capability bound to the proposal_id
+    const approveEnv = opEnvWith(env, "evolution.approve", prop.proposal_id, prop.proposal_id);
+    const result = await withOpKey(() => evolution.approve(approveEnv, prop.proposal_id));
     expect(result.committed).toBe(true);
   });
 });

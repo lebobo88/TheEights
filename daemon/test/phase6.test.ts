@@ -15,6 +15,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
+import { mintOperatorCapability } from "../src/auth/capability.js";
 import { SqliteStore } from "../src/stores/sqlite.js";
 import { AuditEngine } from "../src/engines/audit.js";
 import { PolicyEngine } from "../src/engines/policy.js";
@@ -33,6 +34,38 @@ import type { Envelope } from "../src/schemas/envelope.js";
 import type { Embedder } from "../src/embeddings.js";
 
 const log = pino({ level: "warn" });
+void log; // used in tests but TypeScript strict-mode would warn if unused
+
+// ---------------------------------------------------------------------------
+// Operator capability helpers for phase6 tests
+// ---------------------------------------------------------------------------
+const P6_OP_KEY = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+const P6_KEY_ID = "p6-test-key";
+
+function withOpKey<T>(fn: () => T): T {
+  const prev = process.env["HYDRA_OPERATOR_KEY"];
+  const prevId = process.env["HYDRA_OPERATOR_KEY_ID"];
+  process.env["HYDRA_OPERATOR_KEY"] = P6_OP_KEY;
+  process.env["HYDRA_OPERATOR_KEY_ID"] = P6_KEY_ID;
+  try {
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env["HYDRA_OPERATOR_KEY"];
+    else process.env["HYDRA_OPERATOR_KEY"] = prev;
+    if (prevId === undefined) delete process.env["HYDRA_OPERATOR_KEY_ID"];
+    else process.env["HYDRA_OPERATOR_KEY_ID"] = prevId;
+  }
+}
+
+function makeHitlResolveEnv(actorId: string, requestId: string, workflowId?: string) {
+  const token = mintOperatorCapability({
+    v: 1, actor_id: actorId, actor_kind: "human",
+    capability: "hitl.resolve", resource_id: requestId, workflow_id: workflowId ?? requestId,
+    issued_at: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  });
+  return token;
+}
 
 class StubEmbedder implements Embedder {
   lastError: string | null = null;
@@ -62,6 +95,10 @@ describe("Phase 6 — manifesto alignment", () => {
     dir = mkdtempSync(join(tmpdir(), "eights-p6-"));
     sql = new SqliteStore(join(dir, "state.db"));
     sql.migrate();
+    // Register the test actor as human so operator capability checks pass.
+    sql.db.prepare(
+      `INSERT OR IGNORE INTO actors(actor_id, kind, created_at) VALUES (?, 'human', datetime('now'))`,
+    ).run("phase6-test");
     audit = new AuditEngine(sql, join(dir, "events"));
     policy = new PolicyEngine(sql);
     const vec = new VectorStore(sql.db, 768);
@@ -136,7 +173,15 @@ describe("Phase 6 — manifesto alignment", () => {
 
   it("governance budget enforces proceed → downgrade → block thresholds", () => {
     const run = "wf_budget";
-    gov.setCap(env, run, "budget", 100);
+    // setCap now requires a governance.cap.set capability token.
+    const capSetToken = withOpKey(() => mintOperatorCapability({
+      v: 1, actor_id: env.actor_id, actor_kind: "human",
+      capability: "governance.cap.set", resource_id: run, workflow_id: run,
+      issued_at: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    }));
+    const capSetEnv = { ...env, capability_token: capSetToken } as unknown as typeof env;
+    withOpKey(() => gov.setCap(capSetEnv, run, "budget", 100));
     const a = gov.budgetCharge(env, run, 50);
     expect(a.action).toBe("proceed");
     const b = gov.budgetCharge(env, run, 35);  // 85%
@@ -147,7 +192,15 @@ describe("Phase 6 — manifesto alignment", () => {
 
   it("loop ceiling tick warns at 80% and blocks at cap", () => {
     const run = "wf_loop";
-    gov.setCap(env, run, "iteration", 5);
+    // setCap now requires a governance.cap.set capability token.
+    const capSetToken = withOpKey(() => mintOperatorCapability({
+      v: 1, actor_id: env.actor_id, actor_kind: "human",
+      capability: "governance.cap.set", resource_id: run, workflow_id: run,
+      issued_at: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    }));
+    const capSetEnv = { ...env, capability_token: capSetToken } as unknown as typeof env;
+    withOpKey(() => gov.setCap(capSetEnv, run, "iteration", 5));
     expect(gov.ceilingTick(env, run, "iteration").action).toBe("proceed");
     expect(gov.ceilingTick(env, run, "iteration").action).toBe("proceed");
     expect(gov.ceilingTick(env, run, "iteration").action).toBe("proceed");
@@ -161,7 +214,18 @@ describe("Phase 6 — manifesto alignment", () => {
     gov.breakerOutcome(env, "node_x", "failure");
     const trip = gov.breakerOutcome(env, "node_x", "failure");
     expect(trip.tripped).toBe(true);
-    const reset = gov.breakerOutcome(env, "node_x", "success");
+    // breakerOutcome(success) on a tripped breaker requires an operator capability token
+    // (Fix #1 — close the untrip path). Mint a fresh token bound to node_x.
+    const breakerResetToken = withOpKey(() =>
+      mintOperatorCapability({
+        v: 1, actor_id: env.actor_id, actor_kind: "human",
+        capability: "governance.breaker.reset", resource_id: "node_x", workflow_id: "node_x",
+        issued_at: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      }),
+    );
+    const resetEnv = { ...env, capability_token: breakerResetToken } as unknown as typeof env;
+    const reset = withOpKey(() => gov.breakerOutcome(resetEnv, "node_x", "success"));
     expect(reset.tripped).toBe(false);
   });
 
@@ -170,7 +234,10 @@ describe("Phase 6 — manifesto alignment", () => {
     expect(req.status).toBe("pending");
     const list = gov.hitlList(env, "pending");
     expect(list.find((r) => r.request_id === req.request_id)).toBeDefined();
-    const resolved = gov.hitlResolve(env, req.request_id, "approved", "lgtm");
+    // workflow_id must match run_id from the HITL row ("wf_h") — that's what hitlResolve derives.
+    const token = withOpKey(() => makeHitlResolveEnv(env.actor_id, req.request_id, "wf_h"));
+    const resolveEnv = { ...env, capability_token: token } as unknown as typeof env;
+    const resolved = withOpKey(() => gov.hitlResolve(resolveEnv, req.request_id, "approved", "lgtm"));
     expect(resolved.status).toBe("approved");
   });
 

@@ -79,6 +79,7 @@ export class SqliteStore {
     this.applyV2();
     this.applyV3();
     this.applyV4();
+    this.applyV5();
   }
 
   /**
@@ -99,6 +100,26 @@ export class SqliteStore {
         verified_at TEXT NOT NULL
       );
       INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (4, datetime('now'));
+    `);
+  }
+
+  /**
+   * V5 — single-use capability token ledger (replay prevention).
+   *
+   * When a capability token is accepted, its sig.value is recorded here.
+   * A second call with the same sig.value is rejected (replay prevented),
+   * even if the token has not yet expired.
+   * The consumed_at column enables GC of old entries (future maintenance).
+   */
+  private applyV5(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS consumed_capabilities (
+        jti TEXT PRIMARY KEY,        -- sig.value (base64url HMAC) used as one-time key
+        consumed_at TEXT NOT NULL,
+        op TEXT NOT NULL             -- op label for audit
+      );
+      CREATE INDEX IF NOT EXISTS idx_consumed_cap_at ON consumed_capabilities(consumed_at);
+      INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (5, datetime('now'));
     `);
   }
 

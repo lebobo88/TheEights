@@ -7,7 +7,98 @@ import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
+import { createHmac, randomUUID } from "node:crypto";
 import { EightsClient, defaultEnvelope } from "./mcp-client.js";
+
+// ---------- Operator capability mint (CLI-side) ----------
+// Reads HYDRA_OPERATOR_KEY from the CLI process environment (NEVER from the request).
+// Returns the signed token object or null if the key is not configured.
+
+const OPERATOR_ACTOR_ID = process.env["EIGHTS_OPERATOR_ACTOR_ID"] ?? "eights.operator";
+
+function hexDecode(s: string): Buffer | null {
+  if (s.length % 2 !== 0) return null;
+  try {
+    const b = Buffer.from(s, "hex");
+    if (b.toString("hex") !== s.toLowerCase()) return null;
+    return b;
+  } catch { return null; }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type JsonValue = string | number | boolean | null | any[] | Record<string, any>;
+function canonJson(val: JsonValue): string {
+  if (val === null) return "null";
+  if (typeof val === "boolean") return val ? "true" : "false";
+  if (typeof val === "number") return JSON.stringify(val);
+  if (typeof val === "string") {
+    let out = '"';
+    for (let i = 0; i < val.length; i++) {
+      const cp = val.codePointAt(i)!;
+      if (cp > 0xffff) {
+        const hi = Math.floor((cp - 0x10000) / 0x400) + 0xd800;
+        const lo = ((cp - 0x10000) % 0x400) + 0xdc00;
+        out += `\\u${hi.toString(16).padStart(4, "0")}\\u${lo.toString(16).padStart(4, "0")}`;
+        i++;
+      } else if (cp > 0x7f) { out += `\\u${cp.toString(16).padStart(4, "0")}`;
+      } else if (cp === 0x22) { out += '\\"';
+      } else if (cp === 0x5c) { out += "\\\\";
+      } else if (cp === 0x08) { out += "\\b";
+      } else if (cp === 0x0c) { out += "\\f";
+      } else if (cp === 0x0a) { out += "\\n";
+      } else if (cp === 0x0d) { out += "\\r";
+      } else if (cp === 0x09) { out += "\\t";
+      } else if (cp < 0x20) { out += `\\u${cp.toString(16).padStart(4, "0")}`;
+      } else { out += val[i]; }
+    }
+    return out + '"';
+  }
+  if (Array.isArray(val)) return "[" + (val as JsonValue[]).map(canonJson).join(",") + "]";
+  const keys = Object.keys(val).sort((a, b) => {
+    const la = [...a]; const lb = [...b];
+    for (let i = 0; i < Math.min(la.length, lb.length); i++) {
+      const d = la[i]!.codePointAt(0)! - lb[i]!.codePointAt(0)!;
+      if (d !== 0) return d;
+    }
+    return la.length - lb.length;
+  });
+  return "{" + keys.map((k) => canonJson(k as JsonValue) + ":" + canonJson((val as Record<string, JsonValue>)[k] as JsonValue)).join(",") + "}";
+}
+
+/**
+ * Mint an operator capability token for a CLI action.
+ * Returns the token object, or null if HYDRA_OPERATOR_KEY is unset.
+ */
+function mintCliCapability(capability: string, resourceId: string, workflowId: string): unknown | null {
+  const raw = process.env["HYDRA_OPERATOR_KEY"];
+  if (!raw) return null;
+  try {
+    const keyBuf = hexDecode(raw) ?? Buffer.from(raw, "utf8");
+    const keyId = process.env["HYDRA_OPERATOR_KEY_ID"] ?? "default";
+    const nowSec = Math.floor(Date.now() / 1000);
+    const payload = {
+      v: 1, actor_id: OPERATOR_ACTOR_ID, actor_kind: "human",
+      capability, resource_id: resourceId, workflow_id: workflowId,
+      issued_at: nowSec, exp: nowSec + 300,
+      jti: randomUUID(),
+    };
+    const sig = createHmac("sha256", keyBuf).update(canonJson(payload as JsonValue), "utf8").digest()
+      .toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return { ...payload, sig: { alg: "HMAC-SHA256", key_id: keyId, value: sig } };
+  } catch { return null; }
+}
+
+/**
+ * Build a capability-bearing envelope for an operator action.
+ * Falls back to a plain envelope if HYDRA_OPERATOR_KEY is not configured
+ * (the daemon will fail-closed for ops that require it).
+ */
+function opEnvelope(capability: string, resourceId: string, workflowId?: string): Record<string, unknown> {
+  const env = defaultEnvelope(OPERATOR_ACTOR_ID) as Record<string, unknown>;
+  const token = mintCliCapability(capability, resourceId, workflowId ?? resourceId);
+  if (token !== null) env["capability_token"] = token;
+  return env;
+}
 
 const program = new Command();
 program.name("eights").description("TheEights — persistent self-evolving agent fabric").version("0.3.0");
@@ -95,7 +186,7 @@ program.command("resources").description("List registered resources")
 const resource = program.command("resource");
 resource.command("show <rid>").action(async (rid: string) => withClient(async (c) => c.call("eights.evolution.get_resource", { rid })));
 resource.command("unfreeze <rid>").description("Operator-signed unfreeze (frozen → hitl-only)").action(async (rid: string) => withClient(async (c) =>
-  c.call("eights.evolution.unfreeze", { envelope: defaultEnvelope("eights.operator"), rid })
+  c.call("eights.evolution.unfreeze", { envelope: opEnvelope("evolution.unfreeze", rid), rid })
 ));
 
 program.command("drift").description("Scan registry + consumer source paths for drift").action(async () => withClient(async (c) => c.call("eights.evolution.detect_drift", {})));
@@ -123,11 +214,35 @@ program.command("review").description("Interactive HITL review queue").action(as
       const action = (await rl.question("[a]pprove / [r]eject / [s]kip / [q]uit > ")).trim().toLowerCase();
       if (action === "q") break;
       if (action === "a") {
-        const r = await c.call("eights.evolution.approve", { envelope: defaultEnvelope("eights.operator"), proposal_id: p.proposal_id });
+        // For hitl-only resources, approve() requires a pre-approved HITL row.
+        // Step 1: find the pending evolution.approve HITL row for this proposal.
+        // Step 2: resolve it (operator hitl.resolve token, scoped to request_id).
+        // Step 3: call evolution.approve with the approve capability token.
+        // For auto/auto-low-risk resources the HITL row is absent — step 1 is a no-op.
+        const hitlList = await c.call<Array<{ request_id: string; kind: string; payload: { proposal_id?: string } }>>(
+          "eights.governance.hitl.list", { envelope: defaultEnvelope(OPERATOR_ACTOR_ID), status: "pending" },
+        );
+        const hitlRow = hitlList.find((r) => r.kind === "evolution.approve" && r.payload?.proposal_id === p.proposal_id);
+        if (hitlRow) {
+          // Resolve the HITL row first. workflow_id = request_id (no run_id on evolution.approve rows).
+          await c.call("eights.governance.hitl.resolve", {
+            envelope: opEnvelope("hitl.resolve", hitlRow.request_id, hitlRow.request_id),
+            request_id: hitlRow.request_id,
+            decision: "approved",
+            note: "operator approved via CLI",
+          });
+        }
+        const r = await c.call("eights.evolution.approve", {
+          envelope: opEnvelope("evolution.approve", p.proposal_id),
+          proposal_id: p.proposal_id,
+        });
         process.stdout.write(JSON.stringify(r, null, 2) + "\n");
       } else if (action === "r") {
         const reason = (await rl.question("reason > ")).trim() || "no reason given";
-        await c.call("eights.evolution.reject", { envelope: defaultEnvelope("eights.operator"), proposal_id: p.proposal_id, reason });
+        await c.call("eights.evolution.reject", {
+          envelope: opEnvelope("evolution.reject", p.proposal_id),
+          proposal_id: p.proposal_id, reason,
+        });
       }
     }
   } finally { rl.close(); await c.close(); }

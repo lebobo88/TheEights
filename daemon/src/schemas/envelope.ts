@@ -12,6 +12,13 @@ export const Envelope = z.object({
   scope: z.array(z.string()).default([]),
   trace_id: z.string().min(1),
   parent_trace_id: z.string().optional(),
+  /**
+   * Operator capability token — required for operator-only governance ops
+   * (hitl.resolve, evolution.approve/unfreeze/rollback, breaker.reset).
+   * Verified via auth/capability.ts:verifyOperatorCapability.
+   * Most envelopes do not carry one; the operator-only ops enforce its presence.
+   */
+  capability_token: z.unknown().optional(),
 });
 
 export type Envelope = z.infer<typeof Envelope>;

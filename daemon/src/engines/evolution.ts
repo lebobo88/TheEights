@@ -20,6 +20,7 @@ import type { AuditEngine } from "./audit.js";
 import type { WriteRouter, WriteResult } from "./writeback.js";
 import type { GovernanceStateEngine } from "./governance-state.js";
 import type { Envelope } from "../schemas/envelope.js";
+import { verifyOperatorCapability } from "../auth/capability.js";
 import type {
   Resource, ResourceKind, RiskClass, EvolutionPolicy, Consumer, WritebackMode, ResourceSource,
 } from "../schemas/resource.js";
@@ -77,6 +78,76 @@ export class EvolutionEngine {
    *  HITL rows for hitl-only proposals (TE-EV-1). Must be called before any
    *  hitl-only commit/approve path is exercised. */
   setGovernance(gov: GovernanceStateEngine): void { this.governance = gov; }
+
+  /**
+   * Enforce operator capability on an operator-only evolution op.
+   *
+   * Checks (in order):
+   *   1. capability_token present in envelope
+   *   2. token verifies (HMAC, schema, expiry, TTL, field checks)
+   *   3. token.actor_id === env.actor_id (bind token actor to envelope actor)
+   *   4. token.actor_id registered in actors table with kind='human'
+   *   5. single-use: sig.value (jti) not already consumed (replay prevention)
+   *
+   * Throws a descriptive Error on any failure. Reason strings never include token values.
+   */
+  private requireOperatorCapability(
+    env: Envelope,
+    capability: string,
+    resourceId: string,
+    workflowId: string,
+    opLabel: string,
+  ): void {
+    const rawEnv = env as Record<string, unknown>;
+    const token = rawEnv["capability_token"];
+    if (token === undefined || token === null) {
+      this.audit.record("evolution.auth.rejected", env, { op: opLabel, reason: "missing capability_token" });
+      throw new Error(`${opLabel} requires an operator capability token (capability_token missing in envelope)`);
+    }
+    const result = verifyOperatorCapability(token, {
+      expectedCapability: capability,
+      expectedWorkflowId: workflowId,
+      expectedResourceId: resourceId,
+    });
+    if (!result.valid) {
+      this.audit.record("evolution.auth.rejected", env, { op: opLabel, reason: result.reason });
+      throw new Error(`${opLabel} refused: capability token invalid (${result.reason})`);
+    }
+    // Token actor MUST equal envelope's claimed actor (Fix #2).
+    if (result.actor_id !== env.actor_id) {
+      this.audit.record("evolution.auth.rejected", env, { op: opLabel, reason: "actor_id mismatch" });
+      throw new Error(`${opLabel} refused: token actor_id does not match envelope actor_id`);
+    }
+    const actorId = result.actor_id;
+    // actors-table binding.
+    const actorRow = this.sql.db.prepare(
+      `SELECT kind FROM actors WHERE actor_id = ?`,
+    ).get(actorId) as { kind: string } | undefined;
+    if (!actorRow) {
+      this.audit.record("evolution.auth.rejected", env, { op: opLabel, reason: "actor not registered" });
+      throw new Error(`${opLabel} refused: token actor_id is not registered in actors table`);
+    }
+    if (actorRow.kind !== "human") {
+      this.audit.record("evolution.auth.rejected", env, { op: opLabel, reason: "actor_kind not human" });
+      throw new Error(`${opLabel} refused: token actor must have kind=human in actors table`);
+    }
+    // Single-use: use the jti returned by the VERIFIER (from the normalized, HMAC-verified
+    // payload) — NOT a re-extraction from the raw token (Fix 6.3).
+    const jti = result.jti;
+    if (!jti) {
+      this.audit.record("evolution.auth.rejected", env, { op: opLabel, reason: "jti unavailable from verifier" });
+      throw new Error(`${opLabel} refused: capability token jti unavailable`);
+    }
+    const consumed_at = new Date().toISOString();
+    const inserted = this.sql.db.prepare(
+      `INSERT OR IGNORE INTO consumed_capabilities(jti, consumed_at, op) VALUES (?,?,?)`,
+    ).run(jti, consumed_at, opLabel);
+    if (inserted.changes === 0) {
+      this.audit.record("evolution.auth.rejected", env, { op: opLabel, reason: "token already consumed (replay)" });
+      throw new Error(`${opLabel} refused: capability token has already been used (replay prevented)`);
+    }
+    this.audit.record("evolution.auth.accepted", env, { op: opLabel, actor_id: actorId, capability });
+  }
 
   // ---------- RSPL ----------
 
@@ -337,6 +408,8 @@ export class EvolutionEngine {
   }
 
   async approve(env: Envelope, proposal_id: string): Promise<{ committed: boolean; reason: string; version?: string; writeback?: WriteResult[] }> {
+    // Enforce operator capability — bound to this specific proposal_id.
+    this.requireOperatorCapability(env, "evolution.approve", proposal_id, proposal_id, "approve");
     const proposal = this.getProposal(proposal_id);
     if (!proposal) throw new Error(`unknown proposal ${proposal_id}`);
     const resource = this.getResource(proposal.resource_rid);
@@ -378,11 +451,17 @@ export class EvolutionEngine {
   }
 
   reject(env: Envelope, proposal_id: string, reason: string): void {
+    // Enforce operator capability — bound to this specific proposal_id (Fix #3).
+    this.requireOperatorCapability(env, "evolution.reject", proposal_id, proposal_id, "reject");
     this.setStatus(proposal_id, "rejected", env.actor_id);
     this.audit.record("evolution.reject", env, { proposal_id, reason });
   }
 
   async rollback(env: Envelope, rid: string, to_version: string): Promise<{ rid: string; current_version: string }> {
+    // Enforce operator capability — resource_id encodes rid+to_version so the token
+    // authorises exactly this rollback target (Fix #6). workflow_id = rid.
+    const rollbackResourceId = `${rid}@${to_version}`;
+    this.requireOperatorCapability(env, "evolution.rollback", rollbackResourceId, rid, "rollback");
     const resource = this.getResource(rid);
     if (!resource) throw new Error(`unknown resource ${rid}`);
     if (resource.evolution_policy === "frozen") throw new Error("frozen resource cannot be rolled back");
@@ -395,6 +474,8 @@ export class EvolutionEngine {
 
   /** Operator-signed unfreeze. Audited as a distinct event. */
   unfreeze(env: Envelope, rid: string): void {
+    // Enforce operator capability — bound to the resource rid.
+    this.requireOperatorCapability(env, "evolution.unfreeze", rid, rid, "unfreeze");
     const resource = this.getResource(rid);
     if (!resource) throw new Error(`unknown resource ${rid}`);
     if (resource.evolution_policy !== "frozen") return;

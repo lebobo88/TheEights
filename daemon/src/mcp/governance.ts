@@ -134,20 +134,16 @@ export function registerGovernanceTools(
         },
       },
       "eights.governance.hitl.resolve": {
-        description: "Resolve a pending HITL request (approved | rejected). Records resolver + note in audit chain.",
+        description: "Resolve a pending HITL request (approved | rejected). Requires a valid operator capability token in envelope.capability_token (capability='hitl.resolve', resource_id=request_id). Records resolver + note in audit chain.",
         schema: HitlResolveArgs,
         handler: async (a: z.infer<typeof HitlResolveArgs>) => {
-          // TE-EV-1: FIXME(auth): hitlResolve trusts the caller's actor_id without
-          // verifying operator capability. For 'evolution.approve' rows this means
-          // any actor with MCP access can resolve them. The Envelope schema has no
-          // role/capability field and the IdentityEngine actor_kind (agent|human|system)
-          // is NOT propagated into the Envelope at runtime — there is NO operator-
-          // capability mechanism in the repo (confirmed by grep of Envelope, actors
-          // table, PolicyEngine, GovernanceStateEngine). An unforgeable operator
-          // capability would require Envelope.actor_kind or a bearer token checked
-          // against the actors table. That is an ecosystem auth gap tracked separately.
-          // The reserved-kind restriction above closes the forgery vector; this comment
-          // documents the remaining resolution-side gap.
+          // WS-AUTH: operator capability enforcement is now implemented in
+          // GovernanceStateEngine.hitlResolve via verifyOperatorCapability
+          // (daemon/src/auth/capability.ts). The envelope MUST carry a
+          // capability_token signed with HYDRA_OPERATOR_KEY and the token's
+          // actor_id MUST exist in the actors table with kind='human'. Callers
+          // without a valid token receive a thrown error (fail-closed). This
+          // replaces the FIXME(auth) that tracked the resolution-side auth gap.
           return gov.hitlResolve(a.envelope, a.request_id, a.decision, a.note);
         },
       },

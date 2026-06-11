@@ -200,6 +200,19 @@ async function main(): Promise<void> {
   const memory = new MemoryEngine(sql, vec, graph, audit, embedder, policy);
   const identity = new IdentityEngine(sql);
   identity.registerActor("eights.system", "system");
+
+  // Register (or promote) the operator actor as kind='human' so capability token
+  // checks pass. EIGHTS_OPERATOR_ACTOR_ID defaults to "eights.operator".
+  // UPSERT — not INSERT OR IGNORE — so a pre-existing row with kind != 'human'
+  // (e.g. 'agent' seeded by an older daemon version) is corrected to 'human'.
+  // Without the DO UPDATE a pre-existing non-human row would remain and brick
+  // every operator capability check.
+  const operatorActorId = process.env["EIGHTS_OPERATOR_ACTOR_ID"] ?? "eights.operator";
+  sql.db.prepare(
+    `INSERT INTO actors(actor_id, kind, created_at) VALUES (?, 'human', datetime('now'))
+     ON CONFLICT(actor_id) DO UPDATE SET kind = 'human'`,
+  ).run(operatorActorId);
+
   for (const p of ["TheEights", "pair-programmer", "Hydra", "ExecutiveSuite", "xenia"]) {
     identity.registerProject(p, "infra", ["public"]);
   }
