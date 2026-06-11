@@ -69,15 +69,29 @@ export class LlmJudgeEval implements EvalAdapter {
       return { eval_delta: -1, evaluator_missing: true, metric_scores: { raw_len: raw.length }, notes: `failed to parse LLM JSON — blocked (evaluator_missing): ${raw.slice(0, 200)}` };
     }
 
-    const cur = clamp(Number(parsed.current ?? 0), -1, 1);
-    const cand = clamp(Number(parsed.candidate ?? 0), -1, 1);
-    const delta = cand - cur;
+    // FIX 1: validate that both current and candidate are finite numbers in [-1, 1].
+    // A parsed-but-invalid result (missing fields, non-number, NaN, Infinity, out of range)
+    // must fail closed — do NOT coerce undefined/null/NaN to 0 (which would pass the gate).
+    const rawCur = parsed["current"];
+    const rawCand = parsed["candidate"];
+    const isValidScore = (x: unknown): x is number =>
+      typeof x === "number" && Number.isFinite(x) && x >= -1 && x <= 1;
+    if (!isValidScore(rawCur) || !isValidScore(rawCand)) {
+      return {
+        eval_delta: -1,
+        evaluator_missing: true,
+        metric_scores: {},
+        notes: `LLM JSON shape invalid — blocked (evaluator_missing): current=${JSON.stringify(rawCur)}, candidate=${JSON.stringify(rawCand)}`,
+      };
+    }
+
+    const delta = rawCand - rawCur;
     return {
       eval_delta: delta,
       // evaluator_missing is intentionally absent (falsy) on success so the
       // evolution engine's evaluator_missing!==false check sees a clear pass.
-      metric_scores: { current_score: cur, candidate_score: cand },
-      notes: typeof parsed.notes === "string" ? parsed.notes.slice(0, 500) : "(no notes)",
+      metric_scores: { current_score: rawCur, candidate_score: rawCand },
+      notes: typeof parsed["notes"] === "string" ? parsed["notes"].slice(0, 500) : "(no notes)",
     };
   }
 }
@@ -88,9 +102,4 @@ function extractJson(s: string): Record<string, unknown> | null {
   const match = s.match(/\{[\s\S]*\}/);
   if (!match) return null;
   try { return JSON.parse(match[0]) as Record<string, unknown>; } catch { return null; }
-}
-
-function clamp(n: number, lo: number, hi: number): number {
-  if (Number.isNaN(n)) return 0;
-  return Math.max(lo, Math.min(hi, n));
 }

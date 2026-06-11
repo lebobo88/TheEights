@@ -154,11 +154,43 @@ export class EvolutionEngine {
   register(env: Envelope, input: RegisterResourceInput): Resource {
     const existing = this.getResource(input.rid);
     if (existing) {
+      // FIX 3: on the existing-resource path, use the STORED risk_class as the
+      // authoritative severity — a caller must not re-register a critical resource
+      // as "low" to weaken governance. Also reject any attempt to DOWNGRADE
+      // risk_class (defined as moving to a less severe class).
+      const SEVERITY: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+      const storedSeverity = SEVERITY[existing.risk_class] ?? -1;
+      const requestedSeverity = SEVERITY[input.risk_class] ?? -1;
+      if (requestedSeverity < storedSeverity) {
+        const reason = `cannot downgrade risk_class from '${existing.risk_class}' to '${input.risk_class}'`;
+        this.audit.record("evolution.register.rejected", env, { rid: input.rid, reason });
+        throw new Error(reason);
+      }
+      // Use the stored (or upgraded) risk_class for compat check, never the
+      // caller-supplied lower value. If caller supplies a higher risk_class
+      // (upgrade), accept the upgrade and re-check compat with the upgraded class.
+      const effective_risk = requestedSeverity >= storedSeverity ? input.risk_class : existing.risk_class;
+      const effective_policy = input.evolution_policy ?? existing.evolution_policy;
       // TE-EV-3 (#3b): run compat check on the existing-resource path too. A
       // stored critical+auto combo from before the fix must be caught on re-register
       // so it can't persist / evade the policy gate.
-      const effective_policy = input.evolution_policy ?? existing.evolution_policy;
-      validateRiskPolicyCompat(input.risk_class, effective_policy);
+      validateRiskPolicyCompat(effective_risk, effective_policy);
+      // FIX 3: persist the upgrade when effective_risk is more severe than stored.
+      // Without this the stored row stays at the old risk_class and the upgrade
+      // only existed transiently, allowing a subsequent re-register to pass
+      // downgrade-check against the original (stale) stored severity.
+      if (effective_risk !== existing.risk_class || effective_policy !== existing.evolution_policy) {
+        this.sql.db.prepare(
+          `UPDATE resources SET risk_class = ?, evolution_policy = ?, updated_at = datetime('now') WHERE rid = ?`,
+        ).run(effective_risk, effective_policy, input.rid);
+        this.audit.record("evolution.register.upgraded", env, {
+          rid: input.rid,
+          prior_risk_class: existing.risk_class,
+          new_risk_class: effective_risk,
+          prior_policy: existing.evolution_policy,
+          new_policy: effective_policy,
+        });
+      }
       // Idempotent: attach any new source paths.
       if (input.source_paths?.length) {
         for (const p of input.source_paths) {
@@ -308,26 +340,45 @@ export class EvolutionEngine {
           current_content: current,
           candidate_content: proposal.candidate_content,
         });
-        // Only clear evaluator_missing when the adapter ran and did NOT signal it.
+        // Only clear evaluator_missing when the adapter ran, did NOT signal it,
+        // AND returned a finite numeric delta. A NaN/Infinity/non-number delta
+        // serialises to null in JSON and `null < 0` is false — it would silently
+        // pass the delta gate and allow an auto-commit on a broken evaluation.
+        // Always capture metric_scores from the adapter (useful for diagnostics
+        // even when the evaluation fails the finite-delta gate).
+        metric_scores = r.metric_scores;
         if (!r.evaluator_missing) {
-          evaluator_missing = false;
-          eval_delta = r.eval_delta;
+          if (typeof r.eval_delta === "number" && Number.isFinite(r.eval_delta)) {
+            evaluator_missing = false;
+            eval_delta = r.eval_delta;
+            notes = r.notes;
+          } else {
+            // Adapter returned a non-finite delta — treat as evaluator failure.
+            // Do NOT copy r.notes here; our diagnostic message is the gate note.
+            eval_delta = -1;
+            notes = `evaluator returned non-finite delta (${String(r.eval_delta)}) — blocked (evaluator_missing)`;
+            // evaluator_missing stays true
+          }
         } else {
           // Registry found no adapter — keep evaluator_missing:true, delta stays -1.
           eval_delta = -1;
+          notes = r.notes;
         }
-        metric_scores = r.metric_scores;
-        notes = r.notes;
       } catch (err) {
         // Throwing evaluator: keep evaluator_missing:true, delta:-1.
         notes = `evaluator threw: ${err instanceof Error ? err.message : String(err)} — blocked (evaluator_missing)`;
       }
     }
 
+    // FIX 4: SSGM gates are not implemented — do NOT claim passed:true for checks
+    // that never run. Use enforced:false and omit passed. These gates are currently
+    // advisory/reported only (no code in commit/approve reads .passed to block);
+    // if they were required gates and not implemented they would need to fail closed.
+    // As-is: purely advisory. Honest representation = enforced:false, no passed claim.
     const ssgm = {
-      consistency: { passed: true, conflicts: [] as string[] },
-      temporal_decay: { passed: true, reason: undefined as string | undefined },
-      access_control: { passed: true, reason: undefined as string | undefined },
+      consistency: { enforced: false, conflicts: [] as string[] },
+      temporal_decay: { enforced: false, reason: undefined as string | undefined },
+      access_control: { enforced: false, reason: undefined as string | undefined },
     };
     const report: EvaluationReport = { proposal_id, eval_delta, metric_scores, ssgm_gate_results: ssgm, notes, evaluator_missing };
     this.sql.db.prepare(`UPDATE proposals SET evaluation_json = ? WHERE proposal_id = ?`).run(JSON.stringify(report), proposal_id);
@@ -375,6 +426,12 @@ export class EvolutionEngine {
       this.audit.record("evolution.commit.queued", env, { proposal_id });
       return { committed: false, reason: "hitl-only — call approve() to commit" };
     }
+    if (policy === "auto" && resource.risk_class !== "low") {
+      // FIX 2: plain "auto" may only auto-commit when risk_class=low.
+      // Any higher risk class must use hitl-only (or frozen for critical).
+      this.audit.record("evolution.commit.rejected", env, { proposal_id, reason: "auto policy on non-low risk_class" });
+      return { committed: false, reason: "auto policy requires risk_class=low — blocked; update policy to hitl-only or fix risk_class" };
+    }
     if (policy === "auto-low-risk" && resource.risk_class !== "low") {
       // auto-low-risk on a non-low resource is a misconfiguration — fail closed
       // and route to HITL so a human can resolve the policy mismatch.
@@ -387,22 +444,24 @@ export class EvolutionEngine {
       this.audit.record("evolution.commit.rejected", env, { proposal_id, reason: `unknown policy: ${policy}` });
       return { committed: false, reason: `unknown evolution_policy '${policy}' — commit rejected (fail-closed)` };
     }
-    // policy === "auto" OR policy === "auto-low-risk" with risk_class=low: fall through to eval checks.
+    // policy === "auto" with risk_class=low, OR policy === "auto-low-risk" with risk_class=low:
+    // fall through to eval checks.
     const evalReport = proposal.evaluation;
     if (!evalReport) return { committed: false, reason: "must evaluate before commit" };
-    // TE-EV-2 (#2a): require explicit evaluator_missing===false. Any legacy/persisted
-    // report lacking the field (undefined), or one with evaluator_missing===true,
-    // is treated as a failed evaluation. Only evaluator_missing===false (set by a
-    // successful evaluator run) is a valid pass.
-    if (evalReport.evaluator_missing !== false) {
+    // TE-EV-2: require evaluator_missing===false AND a finite non-negative delta.
+    // isCommittableDelta() is the single authoritative gate — it rejects null/NaN/
+    // Infinity/undefined deltas that would otherwise pass a bare `< 0` check
+    // (null < 0 is false in JS; NaN < 0 is false). Legacy/persisted reports with
+    // a malformed eval_delta are blocked here regardless of evaluator_missing value.
+    if (!isCommittableDelta(evalReport)) {
       this.setStatus(proposal_id, "rejected", env.actor_id);
-      this.audit.record("evolution.commit.rejected", env, { proposal_id, reason: "evaluator_missing" });
-      return { committed: false, reason: "no evaluator registered — auto/commit blocked (evaluator_missing)" };
-    }
-    if (evalReport.eval_delta < 0) {
-      this.setStatus(proposal_id, "rejected", env.actor_id);
-      this.audit.record("evolution.commit.rejected", env, { proposal_id, reason: "negative eval delta" });
-      return { committed: false, reason: "eval_delta < 0 — proposal rejected" };
+      const reason = evalReport.evaluator_missing !== false
+        ? "evaluator_missing"
+        : `eval_delta not committable (got ${String(evalReport.eval_delta)}) — blocked`;
+      this.audit.record("evolution.commit.rejected", env, { proposal_id, reason });
+      return { committed: false, reason: reason === "evaluator_missing"
+        ? "no evaluator registered — auto/commit blocked (evaluator_missing)"
+        : `eval_delta must be a finite number >= 0, got ${String(evalReport.eval_delta)} — proposal rejected` };
     }
     return this.performCommit(env, proposal_id);
   }
@@ -432,19 +491,21 @@ export class EvolutionEngine {
       }
     }
 
-    // TE-EV-1 + TE-EV-2 (#2a): require valid evaluation (parity with commit path).
-    // evaluator_missing must be explicitly false — undefined/missing/true all block.
+    // TE-EV-1 + TE-EV-2: require valid evaluation — same isCommittableDelta gate
+    // as commit(). Null/NaN/Infinity/undefined eval_delta values that slip through
+    // JSON.parse of a persisted report must be rejected here too.
     const evalReport = proposal.evaluation;
     if (!evalReport) {
       return { committed: false, reason: "must evaluate before approve" };
     }
-    if (evalReport.evaluator_missing !== false) {
-      this.audit.record("evolution.approve.rejected", env, { proposal_id, reason: "evaluator_missing" });
-      return { committed: false, reason: "no evaluator registered — approve blocked (evaluator_missing)" };
-    }
-    if (evalReport.eval_delta < 0) {
-      this.audit.record("evolution.approve.rejected", env, { proposal_id, reason: "negative eval delta" });
-      return { committed: false, reason: "eval_delta < 0 — approve rejected" };
+    if (!isCommittableDelta(evalReport)) {
+      const reason = evalReport.evaluator_missing !== false
+        ? "evaluator_missing"
+        : `eval_delta not committable (got ${String(evalReport.eval_delta)}) — blocked`;
+      this.audit.record("evolution.approve.rejected", env, { proposal_id, reason });
+      return { committed: false, reason: reason === "evaluator_missing"
+        ? "no evaluator registered — approve blocked (evaluator_missing)"
+        : `eval_delta must be a finite number >= 0, got ${String(evalReport.eval_delta)} — approve rejected` };
     }
 
     return this.performCommit(env, proposal_id);
@@ -664,7 +725,45 @@ export class EvolutionEngine {
       return resource.current_version;
     }
 
-    // auto / auto-low-risk on low-risk resource: direct import (original behaviour).
+    // FIX 2 (importFromSource): mirror commit()'s risk gate — auto/auto-low-risk may
+    // only auto-apply when risk_class === "low". A resource planted (or upgraded) to
+    // a higher risk class with an auto policy bypassed commit() here before this fix.
+    if (policy === "auto" && resource.risk_class !== "low") {
+      // Route to HITL instead of direct write (same outcome as hitl-only branch above).
+      const version = contentHash(content);
+      if (version === resource.current_version) return version;
+      const proposal = this.propose(env, { rid, candidate_content: content, justification });
+      this.audit.record("evolution.import_from_source.queued", env, {
+        rid, version, justification,
+        proposal_id: proposal.proposal_id,
+        reason: `auto policy requires risk_class=low (got ${resource.risk_class}) — routed to proposal; approve to commit`,
+      });
+      return resource.current_version;
+    }
+    if (policy === "auto-low-risk" && resource.risk_class !== "low") {
+      const version = contentHash(content);
+      if (version === resource.current_version) return version;
+      const proposal = this.propose(env, { rid, candidate_content: content, justification });
+      this.audit.record("evolution.import_from_source.queued", env, {
+        rid, version, justification,
+        proposal_id: proposal.proposal_id,
+        reason: `auto-low-risk policy requires risk_class=low (got ${resource.risk_class}) — routed to proposal; approve to commit`,
+      });
+      return resource.current_version;
+    }
+    if (policy !== "auto" && policy !== "auto-low-risk") {
+      // Unknown policy: fail closed — queue HITL so a human can inspect.
+      const version = contentHash(content);
+      if (version === resource.current_version) return version;
+      const proposal = this.propose(env, { rid, candidate_content: content, justification });
+      this.audit.record("evolution.import_from_source.queued", env, {
+        rid, version, justification,
+        proposal_id: proposal.proposal_id,
+        reason: `unknown policy '${policy}' — fail-closed; routed to proposal`,
+      });
+      return resource.current_version;
+    }
+    // policy === "auto" or "auto-low-risk", and risk_class === "low": direct import.
     const version = contentHash(content);
     if (version === resource.current_version) return version;
     this.writeVersion(rid, version, content, env.actor_id, justification);
@@ -698,6 +797,31 @@ export class EvolutionEngine {
   private versionPath(rid: string, version: string): string {
     return join(this.resourcesDir, sanitizeRid(rid), `${version}.content`);
   }
+}
+
+/**
+ * isCommittableDelta — shared finite-delta gate for commit() and approve().
+ *
+ * A persisted/legacy/malformed EvaluationReport may carry eval_delta=null,
+ * eval_delta=NaN, or eval_delta=Infinity because getProposal() blindly
+ * JSON.parse()s the stored blob. In JavaScript:
+ *   null < 0  → false  (null coerces to 0)
+ *   NaN  < 0  → false  (any NaN comparison is false)
+ * so a bare `eval_delta < 0` check silently passes these values and allows
+ * auto-commit on a broken/tampered report.
+ *
+ * This helper enforces BOTH invariants atomically:
+ *   1. evaluator_missing === false  (explicit flag, not merely falsy)
+ *   2. eval_delta is a finite number >= 0
+ *
+ * Return true only when the report is safe to commit. False on any
+ * missing/malformed/non-finite/negative delta, or any evaluator_missing
+ * value other than literal false.
+ */
+export function isCommittableDelta(report: EvaluationReport): boolean {
+  if (report.evaluator_missing !== false) return false;
+  const d = report.eval_delta;
+  return typeof d === "number" && Number.isFinite(d) && d >= 0;
 }
 
 /**

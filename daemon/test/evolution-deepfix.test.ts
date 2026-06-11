@@ -90,9 +90,9 @@ describe("#2a — evaluator_missing!==false gate (legacy reports block)", () => 
       eval_delta: 1,
       metric_scores: {},
       ssgm_gate_results: {
-        consistency: { passed: true, conflicts: [] },
-        temporal_decay: { passed: true },
-        access_control: { passed: true },
+        consistency: { passed: true, conflicts: [], enforced: false },
+        temporal_decay: { passed: true, enforced: false },
+        access_control: { passed: true, enforced: false },
       },
       notes: "legacy report",
       // evaluator_missing intentionally absent (undefined)

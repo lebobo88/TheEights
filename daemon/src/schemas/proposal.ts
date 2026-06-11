@@ -15,9 +15,23 @@ export const EvaluationReport = z.object({
   eval_delta: z.number(),                          // ≥ 0 required for auto-commit
   metric_scores: z.record(z.string(), z.number()),
   ssgm_gate_results: z.object({
-    consistency: z.object({ passed: z.boolean(), conflicts: z.array(z.string()) }),
-    temporal_decay: z.object({ passed: z.boolean(), reason: z.string().optional() }),
-    access_control: z.object({ passed: z.boolean(), reason: z.string().optional() }),
+    consistency: z.object({
+      /** Whether the gate ran and passed. Absent means the gate did not run (enforced=false). */
+      passed: z.boolean().optional(),
+      conflicts: z.array(z.string()),
+      /** True only when the gate logic actually executed. False = not implemented / skipped. */
+      enforced: z.boolean(),
+    }),
+    temporal_decay: z.object({
+      passed: z.boolean().optional(),
+      reason: z.string().optional(),
+      enforced: z.boolean(),
+    }),
+    access_control: z.object({
+      passed: z.boolean().optional(),
+      reason: z.string().optional(),
+      enforced: z.boolean(),
+    }),
   }),
   notes: z.string().optional(),
   /** True when the registry found no adapter for (kind, consumer). Callers
