@@ -39,6 +39,7 @@ Read `ARCHITECTURE.md` first. Read `ROADMAP.md` for phase scope.
 - **Tests:** Vitest. New engines require a round-trip test through their MCP tool surface.
 - **Logging:** pino JSON to `~/.eights/logs/eights-daemon-YYYY-MM-DD.log`. Never `console.log` in daemon code.
 - **No backwards-compat shims** for unreleased code.
+- **no-premature-done**: do not declare a task done until the full relevant Vitest suite passes and the build is clean. A contract in a sibling engine can break silently if only the new test is checked.
 
 ## Layering rules
 
