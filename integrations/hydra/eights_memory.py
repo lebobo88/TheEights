@@ -33,10 +33,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 
+# Resolution: EIGHTS_DAEMON_JS env override -> anchor-relative to this repo
+# (integrations/hydra/eights_memory.py -> repo root is parents[2]). No
+# hardcoded machine-specific absolute path.
 DAEMON_PATH_DEFAULT = Path(
     os.environ.get(
         "EIGHTS_DAEMON_JS",
-        "C:/AiAppDeployments/TheEights/daemon/dist/index.js",
+        str(Path(__file__).resolve().parents[2] / "daemon" / "dist" / "index.js"),
     )
 )
 
