@@ -30,7 +30,7 @@ export const EvolutionPolicy = z.enum([
 ]);
 export type EvolutionPolicy = z.infer<typeof EvolutionPolicy>;
 
-export const Consumer = z.enum(["eights", "pp", "hydra", "execsuite", "rlm", "xenia"]);
+export const Consumer = z.enum(["eights", "pp", "hydra", "execsuite", "rlm", "xenia", "agentsmith"]);
 export type Consumer = z.infer<typeof Consumer>;
 
 export const WritebackMode = z.enum([

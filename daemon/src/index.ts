@@ -448,12 +448,16 @@ function seedConstitutions(c: ConstitutionEngine, log: ReturnType<typeof makeLog
     project_id: "TheEights", domain: "infra",
     scope: [], trace_id: "seed-constitutions",
   };
-  const seeds: Array<{ consumer: "hydra" | "pp" | "execsuite" | "rlm"; path: string }> = [
+  const seeds: Array<{ consumer: "hydra" | "pp" | "execsuite" | "rlm" | "agentsmith"; path: string }> = [
     { consumer: "hydra", path: join(siblingRoot("Hydra"), "constitution.md") },
     { consumer: "pp", path: join(siblingRoot("pair-programmer"), "constitution.md") },
     { consumer: "execsuite", path: join(siblingRoot("ExecutiveSuite"), "constitution.md") },
     // Sibling dir is RLM-Creative (RLM-CLI-Starter was a stale name).
     { consumer: "rlm", path: join(siblingRoot("RLM-Creative"), "constitution.md") },
+    // AgentSmith attests its OWN constitution (smith-constitution.md) under this slot.
+    // siblingRoot reads AgentSmith's actual file so eights' content_hash aligns
+    // byte-for-byte with AgentSmith's local sha256 (both use raw utf8, no normalization).
+    { consumer: "agentsmith", path: join(siblingRoot("AgentSmith"), "daemon", "src", "constitution", "smith-constitution.md") },
   ];
   for (const s of seeds) {
     let content = `# ${s.consumer} constitution (placeholder)\n\nSeeded by TheEights — amend via eights.constitution.propose_amendment.\n`;
