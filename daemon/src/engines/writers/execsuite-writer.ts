@@ -1,8 +1,9 @@
 import type { Consumer } from "../../schemas/resource.js";
 import { pathContains, type WriteBridge, type WriteRequest, type WriteResult } from "../writeback.js";
 import { writeWithGitSideBranch, writeInPlace } from "../git-writer.js";
+import { siblingRoot } from "../../paths.js";
 
-const ROOT = "C:/AiAppDeployments/ExecutiveSuite";
+const ROOT = siblingRoot("ExecutiveSuite");
 
 export class ExecSuiteWriteBridge implements WriteBridge {
   readonly consumer: Consumer = "execsuite";

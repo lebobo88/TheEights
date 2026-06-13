@@ -5,8 +5,9 @@ import type { Envelope } from "../../schemas/envelope.js";
 import type { Logger } from "pino";
 import { walk, registerFile, basenameNoExt, existsDir, type RegistrationResult } from "./common.js";
 import type { RiskClass } from "../../schemas/resource.js";
+import { aiappBase } from "../../paths.js";
 
-const BASE = "C:/AiAppDeployments";
+const BASE = aiappBase();
 
 const SAFETY_HOOK_PATTERNS: RegExp[] = [
   /pre-tool-safety/i,

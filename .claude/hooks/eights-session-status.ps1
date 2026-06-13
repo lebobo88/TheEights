@@ -2,7 +2,18 @@
 # Surfaces pending proposals and audit chain health from TheEights daemon.
 param()
 
-$eightsCli = "C:\AiAppDeployments\TheEights\cli\dist\index.js"
+# Resolve the CLI entrypoint portably:
+#   1. EIGHTS_CLI_JS env override, if set.
+#   2. Anchor-relative: this hook lives at <repo>/.claude/hooks, so the CLI is
+#      at <repo>/cli/dist/index.js (two levels up, then cli/dist).
+# Never hardcode a machine-specific absolute path here.
+if ($env:EIGHTS_CLI_JS) {
+    $eightsCli = $env:EIGHTS_CLI_JS
+} else {
+    $repoRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..") -ErrorAction SilentlyContinue
+    if (-not $repoRoot) { exit 0 }
+    $eightsCli = Join-Path $repoRoot.Path "cli\dist\index.js"
+}
 if (-not (Test-Path $eightsCli)) { exit 0 }
 
 try {

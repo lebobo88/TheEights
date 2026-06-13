@@ -17,7 +17,9 @@ runtime:
   # lives at daemon/dist/index.js — "dist/index.js" never existed at the repo root
   # and produced a broken spawn spec in ~/.hydra/backends.json under key "eights".
   entrypoint: "daemon/dist/index.js"
-  cwd: "C:/AiAppDeployments/TheEights"
+  # AgentMesh pattern: the gateway spawns siblings from the Hydra root, so cwd
+  # is the mesh root (mirrors Hydra's manifest which uses ${HYDRA_ROOT}).
+  cwd: "${HYDRA_ROOT}"
   healthProbe:
     type: mcp-tool-call
     # eights.constitution.get: cheap no-args read returning constitution snapshot.
@@ -87,8 +89,8 @@ audit:
   dedupeKeyField: "event_id"
 
 governance:
-  # Constitution file path relative to runtime.cwd (C:/AiAppDeployments/TheEights).
-  # Verified to exist: C:/AiAppDeployments/TheEights/CONSTITUTION.md
+  # Constitution file path relative to the TheEights repo root (${EIGHTS_HOME}).
+  # Verified to exist: ${EIGHTS_HOME}/CONSTITUTION.md
   constitutionPath: "CONSTITUTION.md"
   # Tool used by meshd to attest the constitution hash.
   # Source: TheEights/daemon/src/mcp/constitution.ts — "eights.constitution.attest"

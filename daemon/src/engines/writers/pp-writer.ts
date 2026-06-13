@@ -3,9 +3,10 @@ import { join } from "node:path";
 import type { Consumer } from "../../schemas/resource.js";
 import { pathContains, type WriteBridge, type WriteRequest, type WriteResult } from "../writeback.js";
 import { writeWithGitSideBranch, writeInPlace } from "../git-writer.js";
+import { siblingRoot } from "../../paths.js";
 
 const ROOTS = [
-  "C:/AiAppDeployments/pair-programmer",
+  siblingRoot("pair-programmer"),
   join(homedir(), ".claude").replace(/\\/g, "/"),
 ];
 

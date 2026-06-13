@@ -5,8 +5,9 @@ import type { Envelope } from "../../schemas/envelope.js";
 import type { Logger } from "pino";
 import { walk, registerFile, basenameNoExt, existsDir, type RegistrationResult } from "./common.js";
 import type { RiskClass } from "../../schemas/resource.js";
+import { siblingRoot } from "../../paths.js";
 
-const DEFAULT_ROOT = "C:/AiAppDeployments/Xenia";
+const DEFAULT_ROOT = siblingRoot("Xenia");
 
 // Xenia's enforcement hooks are all safety-relevant; the redaction and
 // privilege gates are critical (they enforce constitution Articles IV/V).

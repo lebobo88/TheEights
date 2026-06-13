@@ -15,13 +15,14 @@ import { join } from "node:path";
 import type { Logger } from "pino";
 import type { SqliteStore } from "../stores/sqlite.js";
 import type { XeniaBridge } from "../adapters/xenia-bridge.js";
+import { siblingRoot } from "../paths.js";
 
 export interface XeniaWatcherOptions {
   root?: string;
   pollMs?: number;
 }
 
-const DEFAULT_ROOT = "C:/AiAppDeployments/Xenia";
+const DEFAULT_ROOT = siblingRoot("Xenia");
 const SEEN_CAP = 500;
 
 export class XeniaWatcher {

@@ -3,7 +3,7 @@
     "eights-atlas": {
       "command": "node",
       "args": ["--import", "tsx", "server/index.ts"],
-      "cwd": "C:/AiAppDeployments/TheEights/web",
+      "cwd": "${EIGHTS_HOME}/web",
       "env": {
         "EIGHTS_ATLAS_BRIDGE_PORT": "8788"
       },

@@ -17,8 +17,9 @@ import type { EvolutionEngine } from "../evolution.js";
 import type { Envelope } from "../../schemas/envelope.js";
 import type { Logger } from "pino";
 import { walk, registerFile, basenameNoExt, existsDir, type RegistrationResult } from "./common.js";
+import { siblingRoot } from "../../paths.js";
 
-const PP_ROOT = "C:/AiAppDeployments/pair-programmer";
+const PP_ROOT = siblingRoot("pair-programmer");
 // pp installs into the user-level Claude Code dir (~/.claude/), not C:/.claude
 const CLAUDE_ROOT = join(homedir(), ".claude").replace(/\\/g, "/");
 

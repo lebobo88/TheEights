@@ -57,6 +57,7 @@ import { RubricBacktestEval } from "./engines/eval/rubric-backtest.js";
 import { NoopEval } from "./engines/eval/noop.js";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { siblingRoot } from "./paths.js";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { registerMemoryTools } from "./mcp/memory.js";
@@ -448,10 +449,11 @@ function seedConstitutions(c: ConstitutionEngine, log: ReturnType<typeof makeLog
     scope: [], trace_id: "seed-constitutions",
   };
   const seeds: Array<{ consumer: "hydra" | "pp" | "execsuite" | "rlm"; path: string }> = [
-    { consumer: "hydra", path: "C:/AiAppDeployments/Hydra/constitution.md" },
-    { consumer: "pp", path: "C:/AiAppDeployments/pair-programmer/constitution.md" },
-    { consumer: "execsuite", path: "C:/AiAppDeployments/ExecutiveSuite/constitution.md" },
-    { consumer: "rlm", path: "C:/AiAppDeployments/RLM-CLI-Starter/constitution.md" },
+    { consumer: "hydra", path: join(siblingRoot("Hydra"), "constitution.md") },
+    { consumer: "pp", path: join(siblingRoot("pair-programmer"), "constitution.md") },
+    { consumer: "execsuite", path: join(siblingRoot("ExecutiveSuite"), "constitution.md") },
+    // Sibling dir is RLM-Creative (RLM-CLI-Starter was a stale name).
+    { consumer: "rlm", path: join(siblingRoot("RLM-Creative"), "constitution.md") },
   ];
   for (const s of seeds) {
     let content = `# ${s.consumer} constitution (placeholder)\n\nSeeded by TheEights — amend via eights.constitution.propose_amendment.\n`;

@@ -1,21 +1,23 @@
 /**
  * RLM watcher — tails RLM/progress/events.jsonl across all RLM* sibling projects.
  *
- * Auto-discovers projects under EIGHTS_RLM_ROOT (default: C:/AiAppDeployments)
- * matching ^RLM (RLMauth, RLMbackend, ..., RLM-CLI-Starter).
+ * Auto-discovers projects under EIGHTS_RLM_ROOT (default: the AIAPP_BASE dir
+ * that holds the sibling repos) matching ^RLM (RLMauth, RLMbackend, ...,
+ * RLM-Creative).
  */
 import { readdirSync, existsSync, statSync, readFileSync } from "node:fs";
 import { join, basename } from "node:path";
 import type { Logger } from "pino";
 import type { SqliteStore } from "../stores/sqlite.js";
 import type { RlmBridge } from "../adapters/rlm-bridge.js";
+import { aiappBase } from "../paths.js";
 
 export interface RlmWatcherOptions {
   root?: string;
   pollMs?: number;
 }
 
-const DEFAULT_ROOT = "C:/AiAppDeployments";
+const DEFAULT_ROOT = aiappBase();
 
 export class RlmWatcher {
   private timer: NodeJS.Timeout | null = null;

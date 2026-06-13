@@ -4,8 +4,9 @@ import type { Envelope } from "../../schemas/envelope.js";
 import type { Logger } from "pino";
 import { walk, registerFile, basenameNoExt, existsDir, type RegistrationResult } from "./common.js";
 import type { RiskClass } from "../../schemas/resource.js";
+import { siblingRoot } from "../../paths.js";
 
-const EXEC_ROOT = "C:/AiAppDeployments/ExecutiveSuite";
+const EXEC_ROOT = siblingRoot("ExecutiveSuite");
 
 const CRITICAL_SKILLS = new Set([
   "executive-protocol",

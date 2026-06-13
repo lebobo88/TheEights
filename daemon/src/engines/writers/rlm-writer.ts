@@ -2,11 +2,14 @@ import { readdirSync, existsSync } from "node:fs";
 import type { Consumer } from "../../schemas/resource.js";
 import { pathContains, type WriteBridge, type WriteRequest, type WriteResult } from "../writeback.js";
 import { writeWithGitSideBranch, writeInPlace } from "../git-writer.js";
+import { aiappBase } from "../../paths.js";
 
-const BASE = "C:/AiAppDeployments";
+const BASE = aiappBase();
 
 function discoverRoots(): string[] {
-  const roots = [`${BASE}/RLM-CLI-Starter`];
+  // Sibling dir is RLM-Creative (RLM-CLI-Starter was a stale name); the loop
+  // below also picks up any other ^RLM* siblings present on disk.
+  const roots = [`${BASE}/RLM-Creative`];
   try {
     for (const e of readdirSync(BASE, { withFileTypes: true })) {
       if (e.isDirectory() && /^RLM/.test(e.name)) roots.push(`${BASE}/${e.name}`);

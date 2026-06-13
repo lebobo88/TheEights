@@ -10,17 +10,36 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Writable, Readable } from "node:stream";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 
 const DEFAULT_DAEMON =
   process.env.EIGHTS_DAEMON_JS ??
   join(process.cwd(), "..", "daemon", "dist", "index.js");
 
+/**
+ * Anchor-relative daemon path: walk up from this module (web/server) to the
+ * repo root (dir holding a daemon/dist/index.js), then return it. Removes the
+ * machine-specific hardcoded fallback.
+ */
+function repoDaemonFallback(): string | null {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(join(dir, "daemon", "dist", "index.js"))) {
+      return join(dir, "daemon", "dist", "index.js").replace(/\\/g, "/");
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
 const FALLBACKS = [
   join(homedir(), "..", "..", "AiAppDeployments", "TheEights", "daemon", "dist", "index.js"),
-  "C:/AiAppDeployments/TheEights/daemon/dist/index.js",
-];
+  repoDaemonFallback(),
+].filter((p): p is string => Boolean(p));
 
 export class EightsClient {
   private proc: (ChildProcess & { stdin: Writable; stdout: Readable }) | null = null;

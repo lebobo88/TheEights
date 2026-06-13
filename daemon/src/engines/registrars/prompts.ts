@@ -19,14 +19,16 @@ import type { Envelope } from "../../schemas/envelope.js";
 import type { Consumer } from "../../schemas/resource.js";
 import type { Logger } from "pino";
 import { walk, registerFile, basenameNoExt, existsDir, type RegistrationResult } from "./common.js";
+import { siblingRoot } from "../../paths.js";
 
 interface RepoRoot { consumer: Consumer; root: string }
 
 const REPOS: RepoRoot[] = [
-  { consumer: "hydra", root: "C:/AiAppDeployments/Hydra" },
-  { consumer: "pp", root: "C:/AiAppDeployments/pair-programmer" },
-  { consumer: "execsuite", root: "C:/AiAppDeployments/ExecutiveSuite" },
-  { consumer: "rlm", root: "C:/AiAppDeployments/RLM-CLI-Starter" },
+  { consumer: "hydra", root: siblingRoot("Hydra") },
+  { consumer: "pp", root: siblingRoot("pair-programmer") },
+  { consumer: "execsuite", root: siblingRoot("ExecutiveSuite") },
+  // Sibling dir is RLM-Creative (RLM-CLI-Starter was a stale name).
+  { consumer: "rlm", root: siblingRoot("RLM-Creative") },
 ];
 
 export class PromptRegistrar {
