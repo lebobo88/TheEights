@@ -5,7 +5,7 @@
 ![Node 20 LTS](https://img.shields.io/badge/Node-20_LTS-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
 ![MCP](https://img.shields.io/badge/MCP-compatible-blueviolet)
-![Tests](https://img.shields.io/badge/tests-43%2F43-brightgreen)
+![Tests](https://img.shields.io/badge/tests-passing-brightgreen)
 ![Phase](https://img.shields.io/badge/phase-6%20complete-blue)
 
 TheEights is a local-first daemon and [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) server. It sits *below* your orchestrators and gives them shared persistent memory, governance gates, an append-only audit graph, and a gated self-evolution loop. **It is not an orchestrator. It is the substrate.**
@@ -23,10 +23,11 @@ graph TB
         HY["Hydra\nLangGraph supervisor"]
         ES["ExecutiveSuite\n20 C-suite roles"]
         RLM["RLM family\n14+ creative projects"]
+        XEN["Xenia\ncustomer-support squad"]
     end
 
     subgraph TheEights["TheEights — Substrate Layer"]
-        MCP["MCP Surface\n65 tools · 12 namespaces"]
+        MCP["MCP Surface\n70 tools · 12 namespaces"]
         MEM["Hybrid Memory\nvectors + graph + SQL"]
         GOV["Governance Plane\nSSGM + LASM + budget"]
         EVO["Self-Evolution\nRSPL/SEPL + HITL"]
@@ -37,6 +38,7 @@ graph TB
     HY --> MCP
     ES --> MCP
     RLM --> MCP
+    XEN --> MCP
     MCP --> MEM
     MCP --> GOV
     MCP --> EVO
@@ -51,9 +53,9 @@ graph TB
 |-----------|---------|
 | **Hybrid Memory** | Vectors ([sqlite-vec](https://github.com/asg017/sqlite-vec)), property graph (LadybugDB/Kuzu), episodic SQL — one MCP surface, three access paths |
 | **Governance Plane** | SSGM (Structured Safety Gate Model) consistency/decay/access gates; LASM (Layered Agent Security Model) defense-in-depth; budget ledger; circuit breaker; squad-scoped redaction |
-| **Gated Self-Evolution** | 1,284 evolvable resources across 4 consumers. Low-risk auto-commits; medium/high queue for HITL (Human-In-The-Loop) review |
+| **Gated Self-Evolution** | 1,284+ evolvable resources across 5 consumers (pp, Hydra, ExecutiveSuite, RLM, Xenia). Low-risk auto-commits; medium/high queue for HITL (Human-In-The-Loop) review |
 | **Tamper-Evident Audit** | Every read/write/mutation in a hash-chained event log + [CycloneDX](https://cyclonedx.org/) ML-BOM v1.7 export |
-| **Plug-Compatible** | Any MCP-capable agent connects without code changes. 65 tools across 12 namespaces |
+| **Plug-Compatible** | Any MCP-capable agent connects without code changes. 70 tools across 12 namespaces |
 
 ---
 
@@ -66,9 +68,10 @@ graph TD
         A2["hydra-bridge"]
         A3["execsuite-bridge"]
         A4["rlm-bridge"]
+        A5["xenia-bridge"]
     end
 
-    subgraph L6["Layer 6 — MCP Surface (65 tools)"]
+    subgraph L6["Layer 6 — MCP Surface (70 tools)"]
         T1["memory.*"]
         T2["governance.*"]
         T3["evolution.*"]
@@ -84,11 +87,11 @@ graph TD
         C4["Cell Classifier"]
     end
 
-    subgraph L4["Layer 4 — Core Engines (18)"]
+    subgraph L4["Layer 4 — Core Engines"]
         E1["Memory · Evolution · Policy"]
         E2["Audit · Governance · Constitution"]
-        E3["Redaction · Identity · Hydra"]
-        E4["Watchers · Registrars · Writers · Eval"]
+        E3["Redaction · Identity · Hydra · Auth"]
+        E4["Watchers (×4) · Registrars (×5) · Writers · Eval"]
     end
 
     subgraph L3["Layer 3 — Storage"]
@@ -162,13 +165,15 @@ See [ARCHITECTURE.md §12](./ARCHITECTURE.md) for full details.
 ---
 
 <details>
-<summary><strong>MCP Tool Reference (65 tools, 12 namespaces)</strong></summary>
+<summary><strong>MCP Tool Reference (70 tools, 12 namespaces)</strong></summary>
+
+Every tool takes an `Envelope` as its first argument (Hard Rule #2) and every call produces an audit event. List/scan tools that can return large result sets accept `limit` / `offset` pagination params (clamped to `[1,200]`, default page size 50; responses carry `total` + `has_more`) — see the evolution namespace below.
 
 | Namespace | Tools | Purpose |
 |-----------|-------|---------|
 | `eights.memory` | add, search, get, link, resolve, resolve_batch | Hybrid memory CRUD with handle scheme (`ep://`, `sem://`, `proc://`, `meta://`) |
-| `eights.governance` | policy.evaluate, consistency_check, access.check, redact, redact_for_squad, budget.charge, cap.set, ceiling.tick, hitl.request, hitl.resolve, hitl.list, breaker.status, breaker.outcome, breaker.reset | Policy enforcement, budget control, circuit breaking |
-| `eights.evolution` | register, get_resource, list_resources, propose, evaluate, commit, approve, reject, rollback, unfreeze, list_pending, detect_drift | Gated resource modification (RSPL/SEPL) |
+| `eights.governance` | policy.evaluate, consistency_check, access.check, redact, redact_for_squad, budget.charge, cap.set, ceiling.tick, hitl.request, hitl.resolve, hitl.list, breaker.status, breaker.outcome, breaker.reset | Policy enforcement, budget control, circuit breaking (14 tools) |
+| `eights.evolution` | register, get_resource, list_resources `(limit/offset)`, propose, evaluate, commit, approve, reject, rollback, unfreeze, list_pending `(limit/offset)`, detect_drift `(limit/offset)`, reconcile_drift `(limit/offset)` | Gated resource modification (RSPL/SEPL). List/drift tools paginate via `limit`/`offset`; responses include `total` + `has_more` (13 tools) |
 | `eights.audit` | trace, bom, verify | Tamper-evident event log + ML-BOM export |
 | `eights.constitution` | get, attest, propose_amendment | Immutable governance head (hash-chained attestation) |
 | `eights.identity` | register_actor, register_project | Actor and project registry |
@@ -176,8 +181,10 @@ See [ARCHITECTURE.md §12](./ARCHITECTURE.md) for full details.
 | `eights.squad` | list, get | Squad metadata (resources governed by Evolution Engine) |
 | `eights.cells` | classify, distribution, query | Eight Cells semantic axis (vision/context/triggers/influence/risk/focus/constraints/delight) |
 | `eights.prompt` | list, get, diff | Cross-consumer agent prompt registry and versioning |
-| `eights.adapters` | pp.{start,stop,sync_now,register_now}, exec.{start,stop,sync_now,register_now}, rlm.{start,stop,sync_now,register_now}, hydra.register_now | Consumer adapter lifecycle control |
+| `eights.adapters` | pp.{start,stop,sync_now,register_now}, exec.{start,stop,sync_now,register_now}, rlm.{start,stop,sync_now,register_now}, xenia.{start,stop,sync_now,register_now}, hydra.register_now | Consumer adapter lifecycle control (17 tools) |
 | `eights.miner` | run_now | Trigger cross-project pattern mining |
+
+**Total: 70 tools across 12 namespaces** (memory 6, governance 14, evolution 13, audit 3, constitution 3, identity 2, hydra 3, squad 2, cells 3, prompt 3, adapters 17, miner 1).
 
 </details>
 
@@ -195,6 +202,7 @@ TheEights is the shared substrate — these systems read from and write to it bu
 | [**ExecutiveSuite**](https://github.com/lebobo88/ExecutiveSuite) | 20 C-suite agent roles + 4 multi-exec orchestrators | Decision memo ingestion → Agent-BOM graph; 42 governed resources |
 | [**MarketBliss**](https://github.com/lebobo88/MarketBliss) | Marketing organization — 15 specialist agents across 5 Hydra squad packs | Episodic + semantic memory for campaigns; evolution-governed brand-voice and persona resources |
 | [**RLM-Creative**](https://github.com/lebobo88/rlm-creative) | 9-phase creative pipeline (14+ sibling projects) | Event normalization from `events.jsonl`; 1,175 governed resources |
+| [**Xenia**](https://github.com/lebobo88/Xenia-Support) | Customer-support squad — soteria-crew sub-agents, ticket + VoC pipeline (active, not a stub) | `xenia-bridge` normalizes `hearth/progress/events.jsonl` into `domain=customer-support` episodic memory with Eight-Cells tags (Kan→risk, Dui→delight, Xun→influence); `xenia-watcher` tails events; `xenia-registrar` governs ≈48 resources (agents, skills, commands, rubrics, squad, redaction/privilege hooks). Layer-4 PII scrub at the bridge boundary |
 
 ### How AgentSmith + TheEights Work Together
 
@@ -317,18 +325,20 @@ eights.governance.consistency_check { }
 ```
 TheEights/
 ├── daemon/src/
-│   ├── mcp/             12 namespaces, 65 MCP tools
-│   ├── engines/         18 engines (core + watchers + registrars + writers + eval)
+│   ├── mcp/             12 namespaces, 70 MCP tools
+│   ├── auth/            Operator capability-token verifier (HMAC-SHA256)
+│   ├── engines/         Core engines + watchers (×4) + registrars (×5) + writers + eval
 │   ├── stores/          SQLite, sqlite-vec, Kuzu/LadybugDB
 │   ├── cognitive/       Memory Steward, Cost Analyst, Iolaus, Cell Classifier
 │   ├── providers/       LLM/embedding provider factory (Ollama, OpenAI, DeepSeek, AuthHub)
 │   │   └── local/       Gitignored — AuthHub SDK implementations (never committed)
-│   ├── adapters/        pp-bridge, hydra-bridge, execsuite-bridge, rlm-bridge
+│   ├── adapters/        pp-bridge, hydra-bridge, execsuite-bridge, rlm-bridge, xenia-bridge
 │   ├── schemas/         7 domain models (Zod + JSON Schema export)
 │   └── observability/   OTEL sink (localhost-only, opt-in)
 ├── cli/                 Thin CLI shim over MCP
 ├── integrations/hydra/  Python adapter for LangGraph nodes
-├── adrs/                8 Architecture Decision Records
+├── adrs/                9 Architecture Decision Records
+├── mesh-manifest.yaml   AgentMesh sibling manifest (control-plane enrollment)
 ├── .env.example         Annotated environment variable template
 ├── ARCHITECTURE.md      Reference architecture (read this first)
 ├── ROADMAP.md           Phased delivery plan
@@ -349,7 +359,7 @@ TheEights/
 | 5 | Self-evolution closed-loop + WriteBridges | Done |
 | 6 | Hydra manifesto alignment (11 tracks) | Done |
 
-**Current:** v0.3.0 — 65 MCP tools, 43/43 tests passing, 1,284 evolvable resources across 4 consumers.
+**Current:** v0.3.0 — 70 MCP tools, 1,284+ evolvable resources across 5 consumers (pp, Hydra, ExecutiveSuite, RLM, Xenia).
 
 See [ROADMAP.md](./ROADMAP.md) for exit criteria per phase.
 
@@ -369,6 +379,7 @@ See [ROADMAP.md](./ROADMAP.md) for exit criteria per phase.
 | [0006](./adrs/0006-risk-class-evolution-policy.md) | Risk-class evolution policy |
 | [0007](./adrs/0007-source-anchored-resources-and-writeback.md) | Source-anchored resources + WriteBridge |
 | [0008](./adrs/0008-eval-adapter-contract-and-llm-judge.md) | Eval adapter contract + LLM judge |
+| [0009](./adrs/0009-agentmesh-enrollment.md) | AgentMesh enrollment + cheap-read health probe |
 
 ---
 
@@ -393,7 +404,7 @@ See [ROADMAP.md](./ROADMAP.md) for exit criteria per phase.
 cd daemon
 npm install
 npm run dev      # tsx watch mode (auto-restart on changes)
-npm run test     # vitest (43 tests across 12 files)
+npm run test     # vitest (24 test files)
 npm run lint     # ESLint with @typescript-eslint/recommended-type-checked
 npm run build    # production build
 ```

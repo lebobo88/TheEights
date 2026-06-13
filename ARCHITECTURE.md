@@ -10,7 +10,7 @@
 
 ## 1. Why "TheEights"
 
-TheEights is not another orchestrator, agent framework, or executive suite. It is the **substrate layer** that the four existing systems in this workspace converge on:
+TheEights is not another orchestrator, agent framework, or executive suite. It is the **substrate layer** that the consumer systems in this workspace converge on. The five wired consumers (each with its own watcher/bridge + bulk registrar) are:
 
 | System | Role | Today's memory state |
 |---|---|---|
@@ -18,6 +18,7 @@ TheEights is not another orchestrator, agent framework, or executive suite. It i
 | **ExecutiveSuite** | 20 C-suite agents + 4 multi-exec orchestrators | None — markdown artifacts only |
 | **pair-programmer** | 39 sub-agents, 22 teams, taxonomy gates, judges | Rich per-project SQLite + `PROJECT_MASTER.md`; no cross-project layer |
 | **RLM-CLI-Starter (+14 RLM* siblings)** | 9-phase pipeline, 4-CLI parity | Per-project `events.jsonl`; Copilot Memory only |
+| **Xenia** | Customer-support squad — soteria-crew sub-agents, ticket + VoC pipeline (active consumer, not a stub) | Per-project `hearth/progress/events.jsonl`; no governed cross-project layer |
 
 Every one of these has rich *per-run* state and prose-level governance intentions. None has cross-project, governed, auditable, self-evolving memory. **That is the gap, and TheEights fills it.**
 
@@ -43,7 +44,7 @@ The name evokes (a) the 8 reference-doc layers (LASM), (b) the 8 chambers of a t
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  Layer 7 — Adapters (per-consumer integration)                          │
-│    pp-bridge │ hydra-bridge │ execsuite-bridge │ rlm-bridge │ (future)  │
+│    pp │ hydra │ execsuite │ rlm │ xenia bridges │ (future)              │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  Layer 6 — MCP surface  (eights-mcp)                                    │
 │    eights.memory.*   eights.governance.*   eights.evolution.*           │
@@ -192,12 +193,19 @@ All tools take an `Envelope` (above) and return JSON.
 - `access.check(actor, target_scopes) → boolean` (LASM)
 
 ### `eights.evolution.*`
+- `register(...)` / `get_resource(rid)` / `list_resources({consumer?, kind?, risk?}, {limit?, offset?}) → Page<Resource>`
 - `propose(resource_rid, candidate_version, justification, evidence_memory_ids[]) → proposal_id`
 - `evaluate(proposal_id) → EvaluationReport` — runs evals, smoke tests
 - `commit(proposal_id) → version_id` — auto-commits if `risk_class=low`; otherwise queues for HITL
-- `approve(proposal_id, actor) → version_id`
-- `rollback(resource_rid, to_version) → version_id`
-- `list_pending() → Proposal[]`
+- `approve(proposal_id, actor) → version_id` — **operator-capability-gated** (see §5.1)
+- `reject(proposal_id, ...)` — **operator-capability-gated**
+- `rollback(resource_rid, to_version) → version_id` — **operator-capability-gated**
+- `unfreeze(rid) → ...` — **operator-capability-gated**
+- `list_pending({limit?, offset?}) → Page<Proposal>`
+- `detect_drift({limit?, offset?}) → Page<DriftEntry>` — paginates over drift entries; carries `total` + `total_resources` + `has_more`
+- `reconcile_drift({rid?, dryRun?, limit?, offset?}) → {planned, total_drifts, applied, has_more}`
+
+> **Pagination.** The list/drift tools accept `limit` (clamped to `[1,200]`, default 50) and `offset` (clamped `>=0`). Responses are a `Page<T>` envelope with `total` + `has_more` so consumers page deterministically; an over-large `limit` is clamped, never rejected (`engines/evolution.ts → clampPage`).
 
 ### `eights.audit.*`
 - `trace(run_id|decision_id) → AuditGraph`
@@ -228,7 +236,7 @@ All tools take an `Envelope` (above) and return JSON.
 - `get(squad_id)` — YAML body + version + risk_class.
 
 ### `eights.prompt.*` (Phase 6)
-- `list({consumer?})` — every agent prompt across the four consumers.
+- `list({consumer?})` — every agent prompt across the consumer repos.
 - `get(rid)` — current prompt body + version + evolution_policy.
 - `diff(rid, from_version?, to_version?)` — unified line diff for HITL reviewers.
 
@@ -240,14 +248,50 @@ All tools take an `Envelope` (above) and return JSON.
 ### `eights.governance.*` (Phase 6 — extended)
 - `budget.charge(run_id, cost_usd, tokens?) → {action: proceed|downgrade|block}` — durable across daemon restart.
 - `ceiling.tick(run_id, kind: iteration|depth|failure)` — manifesto's loop ceilings.
-- `cap.set(run_id, kind, cap)` — per-run cap override.
-- `hitl.request(kind, payload, run_id?)` / `hitl.resolve(request_id, decision)` / `hitl.list(status?)`
+- `cap.set(run_id, kind, cap)` — per-run cap override. **operator-capability-gated** (see §5.1).
+- `hitl.request(kind, payload, run_id?)` / `hitl.resolve(request_id, decision)` — `hitl.resolve` is **operator-capability-gated** — / `hitl.list(status?)`
 - `breaker.status(node_id)` / `breaker.outcome(node_id, success|failure)` / `breaker.reset(node_id)`
 - `redact_for_squad(target_squad, payload)` — applies the target squad's redaction policy resource.
 
 ### `eights.memory.*` (Phase 6 — extended)
 - `resolve(handle_or_id)` — accepts `ep://`, `sem://`, `proc://`, `meta://`, `mem://`, or raw id.
 - `resolve_batch(handles[])` — bulk fetch used by supervisors hydrating envelope context refs.
+
+### 5.1 Operator capability tokens (governance-write enforcement)
+
+A subset of write tools — the ones that let a human override the gates (`evolution.approve`, `evolution.reject`, `evolution.rollback`, `evolution.unfreeze`, `governance.cap.set`, `governance.hitl.resolve`) — require a signed **operator capability token** in addition to the envelope. The verifier is `daemon/src/auth/capability.ts`; the engines (`engines/evolution.ts`, `engines/governance-state.ts`) call `requireOperatorCapability(...)` inside the same transaction as the mutation, so a missing or invalid token rolls the write back.
+
+This is the **mint → inject → verify** flow seen from the daemon (verify) side:
+
+- **Mint (operator side).** Hydra's `hydra_core/auth/capability.py` (and Xenia's `sign.py`) mint the token: a canonical-JSON payload (`v=1, actor_id, actor_kind="human", capability, resource_id, workflow_id, issued_at, exp, jti`) signed **HMAC-SHA256** with `HYDRA_OPERATOR_KEY`, value base64url-encoded. The wire format is **byte-identical** across the Python minters and this TypeScript verifier (proven by golden-vector tests).
+- **Inject.** The token rides alongside the envelope on the gated tool call.
+- **Verify (TheEights side, fail-closed).** `verifyOperatorCapability` is wrapped in try/catch (never throws), normalises the token via JSON round-trip, enforces an **exact** schema (extra payload/sig fields rejected), checks `alg=HMAC-SHA256` and `key_id` match, recomputes the HMAC over the canonical bytes and compares with `timingSafeEqual`, then enforces semantics: `actor_kind="human"`, capability/`workflow_id`/`resource_id` must match expectations, `issued_at <= now`, bounded TTL (`exp - issued_at <= 86400`), not expired. The `jti` is single-use — callers consume it via a `consumed_capabilities` table to block replay.
+- **Degraded mode.** A token with `sig.value=null` (minted when `HYDRA_OPERATOR_KEY` is unset on the minter — Hydra's degraded fallback) is **always rejected** here; the verifier also fails closed if its own `HYDRA_OPERATOR_KEY` is unset. Reason strings are static text and never interpolate token values.
+
+```mermaid
+%%{init: {'theme':'dark'}}%%
+sequenceDiagram
+    participant Op as Operator (Hydra / Xenia)
+    participant Mint as capability.py / sign.py
+    participant E8 as TheEights daemon
+    participant Auth as auth/capability.ts
+    Op->>Mint: mint(capability, resource_id, workflow_id)
+    Mint-->>Op: token {payload + HMAC-SHA256 sig}
+    Op->>E8: evolution.approve(envelope, token)
+    E8->>Auth: requireOperatorCapability(token, expected)
+    Auth->>Auth: exact-schema + HMAC + temporal + jti checks
+    alt valid (sig + claims + fresh jti)
+        Auth-->>E8: {valid:true, actor_id, jti}
+        E8->>E8: commit inside txn · audit under actor_id
+    else invalid / degraded / replayed
+        Auth-->>E8: {valid:false, reason}
+        E8-->>Op: refused (txn rolled back)
+    end
+```
+
+### 5.2 AgentMesh enrollment
+
+TheEights ships a `mesh-manifest.yaml` (`apiVersion: agentmesh/v1`, `kind: SiblingManifest`) at the repo root. The AgentMesh control plane (`meshd`) reads it and **owns the `eights` entry** in `~/.hydra/backends.json` — spawn spec (`daemon/dist/index.js`), stdio MCP endpoint + discovered tool names, lifecycle policy (start timeout, graceful shutdown, crash-loop breaker), and the constitution attest/audit-export tool bindings. Hand edits to the backends entry are reverted on the next enrollment sync. The manifest's `healthProbe` is an `mcp-tool-call` against **`eights.constitution.get`** (a cheap no-args read, 15s interval / 5s timeout) — it replaced `eights.audit.verify`, whose full chain walk (~20s) routinely timed out and false-tripped the crash-loop breaker on a healthy daemon. Deep chain integrity is still verified at startup (fail-closed readiness gate) and on demand via `eights.audit.verify`. See ADR-0009.
 
 ---
 
@@ -344,7 +388,14 @@ Reads `metrics()`, projects spend, recommends model routing changes as evolution
 - Normalizes events into episodic memory under `domain=<the RLM specialty>` (coding/design/finance/auth/etc.).
 - Cross-RLM pattern mining is automatic — the 14 RLM* siblings finally talk to each other.
 
-### 8.5 Future adapters
+### 8.5 xenia-bridge (customer-support)
+- **Listens to:** Xenia's `hearth/progress/events.jsonl` (ticket-created, ticket-resolved, escalated, VoC-report, output-written), tailed by `xenia-watcher`.
+- **Writes:** normalizes each event into **`domain=customer-support`** episodic memory with explicit Eight-Cells tags — the squad's trigram manifesto compiled (`Kan→risk`, `Dui→delight`, `Xun→influence`). An *escalation* event writes **two** memories (risk + influence): the crossing is danger, the context that crossed is influence; one cell per memory is a schema invariant, so the pair is the faithful encoding.
+- **Layer-4 redaction:** event content is PII-scrubbed **at the bridge** before `memory.add` — the bridge never trusts hook-side redaction alone (Xenia constitution Article IV: no single layer is ever trusted).
+- **Registrar:** `xenia-registrar` bulk-registers Xenia's `.claude/` artifacts as evolvable resources — agents (incl. `soteria-crew/` sub-agents, `high`), skills (`low`), commands (`medium`), rubrics (`low`), the `squad.yaml` (`high`), and enforcement hooks (`pre-response-redaction` / `pre-tool-privilege` → `critical`; others `medium`). Roughly 48 resources at last sweep.
+- **Lifecycle control:** `eights.adapters.xenia.{start,stop,sync_now,register_now}`.
+
+### 8.6 Future adapters
 Just register a new `project_id` and write an adapter that translates that system's events into eights memory ops. No core changes.
 
 ---
@@ -398,6 +449,8 @@ TheEights/
     0006-risk-class-evolution-policy.md
     0007-source-anchored-resources-and-writeback.md
     0008-eval-adapter-contract-and-llm-judge.md
+    0009-agentmesh-enrollment.md
+  mesh-manifest.yaml        # AgentMesh sibling manifest (meshd owns the `eights` backends entry)
   daemon/                   # Node 20 LTS
     package.json
     src/
@@ -436,9 +489,10 @@ TheEights/
         pp-watcher.ts       # pair-programmer event watcher
         execsuite-watcher.ts
         rlm-watcher.ts
+        xenia-watcher.ts    # Xenia customer-support event watcher
         writeback.ts        # WriteRouter dispatcher
-        registrars/         # 4 bulk resource scanners (pp, hydra, execsuite, rlm)
-        writers/            # 4 WriteBridges (sandbox-enforced writeback)
+        registrars/         # 5 bulk resource scanners (pp, hydra, execsuite, rlm, xenia)
+        writers/            # 4 WriteBridges (sandbox-enforced writeback: pp, hydra, execsuite, rlm)
         eval/               # 4 judge adapters (llm-judge, yaml-structural, rubric-backtest, noop)
       stores/
         sqlite.ts           # primary episodic + audit + KV (WAL mode)
@@ -454,6 +508,9 @@ TheEights/
         hydra-bridge.ts
         execsuite-bridge.ts
         rlm-bridge.ts
+        xenia-bridge.ts     # Xenia customer-support → domain=customer-support memory
+      auth/
+        capability.ts       # operator capability-token verifier (HMAC-SHA256, fail-closed)
       observability/
         otel-sink.ts        # OTEL exporter (localhost-only, opt-in)
       schemas/
@@ -463,7 +520,7 @@ TheEights/
         proposal.ts         # evolution proposals
         hydra-envelope.ts   # Hydra message subtypes
         memory-handle.ts    # typed memory references (ep://, sem://, proc://, meta://)
-    test/                   # 12 test files, 43 vitest cases
+    test/                   # vitest suite (24 test files)
   cli/                      # `eights` CLI (thin shim over MCP)
     src/
       index.ts
@@ -493,7 +550,7 @@ TheEights/
   hydra-bridge, execsuite-bridge, rlm-bridge. Nightly pattern miner. Cost analyst. CycloneDX ML-BOM v1.7 export.
 
 - **Phase 5 — Self-evolution closed-loop (DONE)**
-  Side-branch writeback (`theeights/auto`) per ADR-0007. LLM-judge / YAML-structural / rubric-backtest / noop eval registry. 1,284 evolvable resources registered across 4 consumers.
+  Side-branch writeback (`theeights/auto`) per ADR-0007. LLM-judge / YAML-structural / rubric-backtest / noop eval registry. 1,284+ evolvable resources registered across 5 consumers (pp, Hydra, ExecutiveSuite, RLM, Xenia — Xenia added post-Phase 6 via `xenia-bridge`/`xenia-watcher`/`xenia-registrar`).
 
 - **Phase 6 — Hydra manifesto alignment (DONE)**
   11 implementation tracks: constitution attestation, memory handle scheme, HydraEnvelope native ingest, Eight Cells semantic axis, governance plane (budget/ceiling/breaker/HITL), squad-scoped redaction, squads as evolvable resources, OTEL bridge, procedural spine (prompt registry), cognitive services (Memory Steward/Cost Analyst/Iolaus), tests + docs. 43/43 vitest passing.

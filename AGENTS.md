@@ -30,6 +30,8 @@ Read `ARCHITECTURE.md` first. Read `ROADMAP.md` for phase scope.
 
 7. **Hydra squads are not edited as YAML files.** They are `kind: "squad"` resources. Adding or modifying a squad goes through `eights.evolution.propose` + HITL approval. Direct YAML edits get blown away by the next registrar sweep.
 
+8. **Operator-gated writes require a signed capability token.** The human-override write tools — `evolution.{approve,reject,rollback,unfreeze}`, `governance.cap.set`, `governance.hitl.resolve` — call `requireOperatorCapability(...)` (`daemon/src/auth/capability.ts`) inside the same transaction as the mutation. The token is an HMAC-SHA256-signed canonical-JSON payload minted operator-side by Hydra (`hydra_core/auth/capability.py`) / Xenia (`sign.py`); the wire format is byte-identical across minters and this verifier. Verification is **fail-closed**: exact-schema check before HMAC, `key_id` + `alg` match, constant-time compare, bounded TTL (≤24h), `actor_kind="human"`, capability/workflow/resource must match, single-use `jti` (replay-blocked via `consumed_capabilities`). Degraded (`sig.value=null`) tokens and a missing `HYDRA_OPERATOR_KEY` are always rejected. If you add a new human-override write tool, gate it the same way — never weaken or bypass this check. See `ARCHITECTURE.md` §5.1.
+
 ## Coding standards
 
 - **Language:** TypeScript (strict mode) for daemon + CLI. Python only inside `adapters/` if a consumer system is Python-native.
@@ -55,11 +57,15 @@ Read `ARCHITECTURE.md` first. Read `ROADMAP.md` for phase scope.
   - **READ path — read-only by construction (unchanged):** a fixed `eights-atlas` envelope with empty scope (invariant #1), a hard read-only tool whitelist + forbidden-verb denylist (no write/commit/approve/charge), `127.0.0.1`-only bind + `Host` loopback check + `GET`-only. Every proxied read is still audited (invariant #3).
   - **WRITE path — governed operator-write (separate):** lets the operator Approve / Reject / Rollback self-evolution proposals from the browser. It is a **separate** path with a distinct, minimal allowlist of EXACTLY `{evolution.approve, evolution.reject, evolution.rollback}` (no other write tool reachable), a distinct **operator envelope** (actor `operator-rob`, domain `governance`, minimal hard-coded scope — does NOT broaden scope, invariant #1), a **per-session CSRF `X-Atlas-Token`** required on every **POST** (loopback bind + `Host` check retained), in-UI confirm + typed-confirm for high/critical + every rollback, and **server-side frozen/critical refusal** (requires an operator `unfreeze` via CLI — surfaced, never faked). It invokes ONLY the **governed** `eights.evolution.*` tools, which enforce policy/HITL/frozen-refusal/write-back/audit daemon-side (invariants #2, #3, #5 intact — the operator action is the operator-signed override #5 requires). Every action is audited under actor `operator-rob`. See `web/README.md`.
 
-## When adding a new consumer system (5th, 6th, ...)
+## Wired consumers
+
+Five consumer systems are wired today, each with a watcher/bridge + bulk registrar: **pair-programmer**, **Hydra**, **ExecutiveSuite**, **RLM** (14+ siblings), and **Xenia** (customer-support squad — active, not a stub). Xenia's `xenia-bridge` normalizes `hearth/progress/events.jsonl` into `domain=customer-support` episodic memory with Eight-Cells tags (Kan→risk, Dui→delight, Xun→influence) and PII-scrubs at the bridge boundary; `xenia-registrar` governs its `.claude/` artifacts (agents, skills, commands, rubrics, squad, redaction/privilege hooks). See `ARCHITECTURE.md` §8.5.
+
+## When adding a new consumer system (6th, 7th, ...)
 
 - Register a `project_id` via `eights.identity.register_project`.
 - Decide its default `domain` and `scopes`.
-- Write an adapter under `daemon/src/adapters/<name>-bridge.ts` that listens to the consumer's events and translates them to MCP calls.
+- Write an adapter under `daemon/src/adapters/<name>-bridge.ts` (+ a watcher and, if it has governable artifacts, a registrar under `engines/registrars/`) that listens to the consumer's events and translates them to MCP calls. `xenia-bridge` / `xenia-watcher` / `xenia-registrar` are the reference implementation.
 - **Do not** modify core engines. If you find yourself wanting to, raise it for architecture review first.
 
 ## When adding a new resource kind

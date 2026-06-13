@@ -4,9 +4,11 @@ Phased delivery, aligned with §10.2 of the reference architecture doc.
 
 ## Status snapshot (2026-05-24)
 
-**Phase 6 complete — all phases shipped.** `eights-daemon` v0.3.0 boots with **65 MCP tools** across 12 namespaces, four WriteBridges with sandbox-enforced writeback to `theeights/auto` git side-branches, four bulk registrars, four EvalAdapters (LLM-judge for prose, YAML-structural for teams/workflows, rubric-backtest for rubrics, NoopEval catch-all), and full Hydra manifesto alignment (constitution attestation, envelope ingest, budget/ceiling/breaker governance, Eight Cells, squad-scoped redaction). 43/43 vitest passing across 12 files.
+**Phase 6 complete — all phases shipped.** `eights-daemon` v0.3.0 boots with **70 MCP tools** across 12 namespaces, four WriteBridges with sandbox-enforced writeback to `theeights/auto` git side-branches, **five** bulk registrars (pp, hydra, execsuite, rlm, xenia), four EvalAdapters (LLM-judge for prose, YAML-structural for teams/workflows, rubric-backtest for rubrics, NoopEval catch-all), and full Hydra manifesto alignment (constitution attestation, envelope ingest, budget/ceiling/breaker governance, Eight Cells, squad-scoped redaction). Vitest suite green.
 
-Live deployment numbers: **1,284 evolvable resources** registered (pp: 59, hydra: 8 squads, execsuite: 42, rlm family: 1,175). Critical-frozen roster: 8 Hydra squads (carry tool-privilege escalation), 3 ExecutiveSuite governance skills (ai-governance, executive-protocol, financial-frameworks), 5 eval judge rubrics, 2 eights policies, plus RLM safety hooks per project. CycloneDX ML-BOM v1.7 emits 1,288 components. Hash-chained audit log clean.
+Live deployment numbers: **1,284+ evolvable resources** registered (pp: 59, hydra: 8 squads, execsuite: 42, rlm family: 1,175) across the original four consumers, **plus a fifth consumer — Xenia** (customer-support), whose `xenia-registrar` adds ≈48 resources (agents incl. `soteria-crew/` sub-agents, skills, commands, rubrics, `squad.yaml`, and `pre-response-redaction` / `pre-tool-privilege` critical hooks). Critical-frozen roster: 8 Hydra squads (carry tool-privilege escalation), 3 ExecutiveSuite governance skills (ai-governance, executive-protocol, financial-frameworks), 5 eval judge rubrics, 2 eights policies, Xenia's redaction/privilege hooks, plus RLM safety hooks per project. CycloneDX ML-BOM v1.7 emits 1,288+ components. Hash-chained audit log clean.
+
+**Post-Phase 6 additions.** Xenia wired as the 5th consumer (`xenia-bridge` + `xenia-watcher` + `xenia-registrar`, commit `452e508`). Operator capability-token enforcement (HMAC-SHA256) added on human-override writes — `daemon/src/auth/capability.ts`. AgentMesh enrollment via `mesh-manifest.yaml`; health probe switched from `eights.audit.verify` (slow chain walk) to the cheap `eights.constitution.get` read (ADR-0009).
 
 ## Phase 0 — Foundations (DONE)
 
@@ -73,7 +75,7 @@ Live deployment numbers: **1,284 evolvable resources** registered (pp: 59, hydra
 
 ## Phase 5 — Self-evolution closed-loop (DONE)
 
-- [x] Critical-frozen seeds across all 4 consumers (1,284 evolvable resources)
+- [x] Critical-frozen seeds across all consumers (1,284+ evolvable resources; Xenia added as the 5th consumer post-Phase 6)
 - [x] Side-branch writeback (`theeights/auto`) per ADR-0007
 - [x] LLM-judge / YAML-structural / rubric-backtest / noop eval registry
 
