@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteStore } from "../src/stores/sqlite.js";
 import { AuditEngine } from "../src/engines/audit.js";
+import { registerAuditTools } from "../src/mcp/audit.js";
 import type { Envelope } from "../src/schemas/envelope.js";
 
 let store: SqliteStore;
@@ -102,5 +103,43 @@ describe("audit checkpointed verifyChain", () => {
 
     // Mark stays at the last verified row, never advances past a break.
     expect(checkpoint()?.event_id).toBe(2);
+  });
+});
+
+describe("eights.audit.verify MCP handler — incremental-by-default", () => {
+  /**
+   * Asserts that the MCP tool handler passes full:false (incremental) when
+   * called with no args, and full:true only when explicitly requested.
+   * This is the regression guard for the O(new events) fix — a future change
+   * must not silently revert the handler to hardcoded full:true.
+   */
+  it("calls verifyChain with full:false when no args are supplied (incremental default)", async () => {
+    const audit = new AuditEngine(store, eventsDir);
+    const spy = vi.spyOn(audit, "verifyChain");
+    const tools = registerAuditTools(audit, store);
+    await tools["eights.audit.verify"].handler({});
+    expect(spy).toHaveBeenCalledOnce();
+    expect(spy).toHaveBeenCalledWith({ full: false });
+    spy.mockRestore();
+  });
+
+  it("calls verifyChain with full:true when { full: true } is passed", async () => {
+    const audit = new AuditEngine(store, eventsDir);
+    const spy = vi.spyOn(audit, "verifyChain");
+    const tools = registerAuditTools(audit, store);
+    await tools["eights.audit.verify"].handler({ full: true });
+    expect(spy).toHaveBeenCalledOnce();
+    expect(spy).toHaveBeenCalledWith({ full: true });
+    spy.mockRestore();
+  });
+
+  it("calls verifyChain with full:false when { full: false } is explicitly passed", async () => {
+    const audit = new AuditEngine(store, eventsDir);
+    const spy = vi.spyOn(audit, "verifyChain");
+    const tools = registerAuditTools(audit, store);
+    await tools["eights.audit.verify"].handler({ full: false });
+    expect(spy).toHaveBeenCalledOnce();
+    expect(spy).toHaveBeenCalledWith({ full: false });
+    spy.mockRestore();
   });
 });

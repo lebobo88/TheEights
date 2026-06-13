@@ -283,12 +283,15 @@ function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
 }
 
 /* ---- chain status ----
-   audit.verify is a FULL-CHAIN walk (~20s on a 658k-event chain). It must NEVER
-   run inside the /api/atlas/live request path: it shares the single-call mutex
-   (one sqlite connection on the daemon child), so awaiting it there would stall
-   every other read behind it and keep the UI on the offline fallback. Instead we
-   keep a cached result, refresh it in the BACKGROUND (one at a time, rarely), and
-   hand callers the cached value instantly. */
+   audit.verify (no-arg / full:false) is now INCREMENTAL — it resumes from the
+   persisted audit checkpoint and only re-hashes new events. On a ledger with a
+   current checkpoint this is O(tail) rather than O(whole ledger). Even so, it
+   must NEVER run inside the /api/atlas/live request path: it shares the
+   single-call mutex (one sqlite connection on the daemon child), so awaiting it
+   there would stall every other read behind it and keep the UI on the offline
+   fallback. Instead we keep a cached result, refresh it in the BACKGROUND (one
+   at a time, rarely), and hand callers the cached value instantly.
+   Pass { full: true } for a from-genesis deep verify (slow on large ledgers). */
 let lastVerify = 0;
 let verifyInFlight = false;
 let lastVerifyResult: { ok: boolean | null; brokenAt?: number | null; checkedAt: string | null } = {
@@ -448,7 +451,8 @@ async function buildSnapshot(): Promise<Record<string, unknown>> {
   const handoffs = await settle(readTool<{ count?: number; items?: unknown[] }>("hydra.handoff.list", { workflow_id: "" }), {});
   const recent = await settle(readTool<Array<{ actor?: string; kind?: string; ts?: string }>>("audit.trace", { limit: 40 }), []);
   // Non-blocking: use the cached chain status and refresh it in the background.
-  // The expensive full-chain audit.verify never stalls this snapshot.
+  // audit.verify is incremental-by-default (O(tail)); even so, it must not
+  // stall this hot path — it always runs via the background cache refresh.
   refreshChainInBackground();
   const chain = chainSnapshot();
 
