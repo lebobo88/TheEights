@@ -22,6 +22,8 @@ TheEights is not another orchestrator, agent framework, or executive suite. It i
 
 Every one of these has rich *per-run* state and prose-level governance intentions. None has cross-project, governed, auditable, self-evolving memory. **That is the gap, and TheEights fills it.**
 
+Beyond the five bridge-wired consumers, two more sibling systems reach TheEights **through Hydra** — they have no dedicated watcher/bridge. The `legal-compliance` squad pack ([**Senate**](https://github.com/lebobo88/Senate), the Curia — 12 jurists under the Twelve Tables; active, not a stub) and the five `marketing-*` squad packs ([**MarketBliss**](https://github.com/lebobo88/MarketBliss)) are registered by the generic `HydraRegistrar` (§8 / `engines/registrars/hydra-registrar.ts`) as `resource:hydra.squad.<slug>` evolvable resources — `legal-compliance` frozen at `critical`, `marketing-*` at `high` — and write domain-scoped memory through the shared MCP surface. With AgentSmith (the N1..N10 invariant warden) attesting and proposing evolutions over the same substrate, the full mesh is **nine sibling systems**, bound together by a tenth layer — **[AgentMesh](https://github.com/lebobo88/AgentMesh)**, the governed control plane (registry + lifecycle + observability + federated audit) that TheEights enrolls into via [`mesh-manifest.yaml`](./mesh-manifest.yaml) (§5.2 / ADR-0009). AgentMesh routes and observes; it enforces no governance of its own — authority stays TheEights → AgentSmith → Hydra, with TheEights as the root of trust.
+
 The name evokes (a) the 8 reference-doc layers (LASM), (b) the 8 chambers of a typical enterprise C-suite, (c) the 8-ball — opaque but answers. Pick whichever metaphor sticks.
 
 ---

@@ -16,17 +16,24 @@ TheEights is a local-first daemon and [MCP](https://modelcontextprotocol.io/) (M
 
 ## Where TheEights Sits
 
+TheEights is the root-of-trust **substrate** at the bottom of a nine-system mesh, bound together by a tenth layer — **AgentMesh**, the governed control plane. AgentMesh routes and observes; it enforces no governance of its own (authority stays TheEights → AgentSmith → Hydra). The diagram below shows TheEights' direct MCP consumers; the squads that reach it *through* Hydra are detailed in [Connected Projects](#connected-projects).
+
 ```mermaid
 graph TB
-    subgraph Orchestrators["Consumer Systems"]
+    subgraph Mesh["AgentMesh — binding control plane (tenth layer)"]
+        AM["meshd\nregistry · lifecycle · observability\nrouting only — no governance"]
+    end
+
+    subgraph Orchestrators["Direct MCP Consumers"]
         PP["pair-programmer\n39 sub-agents, 22 teams"]
-        HY["Hydra\nLangGraph supervisor"]
+        HY["Hydra\nLangGraph supervisor\n(hosts legal-compliance / Senate,\nmarketing-* / MarketBliss, customer-support / Xenia squads)"]
         ES["ExecutiveSuite\n20 C-suite roles"]
         RLM["RLM family\n14+ creative projects"]
         XEN["Xenia\ncustomer-support squad"]
+        AS["AgentSmith\nN1..N10 invariant warden"]
     end
 
-    subgraph TheEights["TheEights — Substrate Layer"]
+    subgraph TheEights["TheEights — Substrate Layer (root of trust)"]
         MCP["MCP Surface\n70 tools · 12 namespaces"]
         MEM["Hybrid Memory\nvectors + graph + SQL"]
         GOV["Governance Plane\nSSGM + LASM + budget"]
@@ -34,11 +41,13 @@ graph TB
         AUD["Audit Engine\nhash-chain + ML-BOM"]
     end
 
+    AM -.->|enroll · spawn · health-probe| TheEights
     PP --> MCP
     HY --> MCP
     ES --> MCP
     RLM --> MCP
     XEN --> MCP
+    AS --> MCP
     MCP --> MEM
     MCP --> GOV
     MCP --> EVO
@@ -192,17 +201,27 @@ Every tool takes an `Envelope` as its first argument (Hard Rule #2) and every ca
 
 ## Connected Projects
 
-TheEights is the shared substrate — these systems read from and write to it but remain fully independent:
+TheEights is the shared substrate of a **nine-system mesh** (bound together by a tenth layer, AgentMesh — see below). These systems read from and write to TheEights but remain fully independent. Integration arrives by two paths:
+
+- **Direct MCP consumers** with a dedicated bridge/watcher/registrar in `daemon/src/adapters` + `daemon/src/engines` — pair-programmer, ExecutiveSuite, RLM-Creative, Xenia, plus the Hydra envelope/constitution path and AgentSmith's EightsBridge.
+- **Through-Hydra squads** — the `legal-compliance` (Senate) and five `marketing-*` (MarketBliss) squad packs have **no dedicated bridge**; instead the generic `HydraRegistrar` (`daemon/src/engines/registrars/hydra-registrar.ts`) walks `Hydra/squads/*/squad.yaml` and registers each as a governed `resource:hydra.squad.<slug>` evolvable resource. They reach memory/governance via the shared MCP surface under domain-scoped envelopes, not a per-system watcher.
 
 | Project | Role in the Ecosystem | Integration |
 |---------|----------------------|-------------|
-| [**AgentSmith**](https://github.com/lebobo88/AgentSmith) | Meta-governance daemon — enforces 10 immutable invariants across all projects | EightsBridge MCP client; constitution attestation; proposes evolutions but cannot commit (TheEights holds the verdict) |
-| [**Hydra**](https://github.com/lebobo88/Hydra) | LangGraph multi-squad supervisor and dispatcher | Constitution attestation at intake; envelope recording; budget enforcement |
-| [**pair-programmer**](https://github.com/lebobo88/pair-programmer) | Coding harness with 39 sub-agents, 22 teams, taxonomy gates, judges | Watcher ingests run verdicts + artifacts; registrar tracks 59 resources |
-| [**ExecutiveSuite**](https://github.com/lebobo88/ExecutiveSuite) | 20 C-suite agent roles + 4 multi-exec orchestrators | Decision memo ingestion → Agent-BOM graph; 42 governed resources |
-| [**MarketBliss**](https://github.com/lebobo88/MarketBliss) | Marketing organization — 15 specialist agents across 5 Hydra squad packs | Episodic + semantic memory for campaigns; evolution-governed brand-voice and persona resources |
-| [**RLM-Creative**](https://github.com/lebobo88/rlm-creative) | 9-phase creative pipeline (14+ sibling projects) | Event normalization from `events.jsonl`; 1,175 governed resources |
-| [**Xenia**](https://github.com/lebobo88/Xenia-Support) | Customer-support squad — soteria-crew sub-agents, ticket + VoC pipeline (active, not a stub) | `xenia-bridge` normalizes `hearth/progress/events.jsonl` into `domain=customer-support` episodic memory with Eight-Cells tags (Kan→risk, Dui→delight, Xun→influence); `xenia-watcher` tails events; `xenia-registrar` governs ≈48 resources (agents, skills, commands, rubrics, squad, redaction/privilege hooks). Layer-4 PII scrub at the bridge boundary |
+| [**AgentSmith**](https://github.com/lebobo88/AgentSmith) | Meta-governance daemon — enforces 10 immutable invariants (N1..N10) across all projects | EightsBridge MCP client; constitution attestation; proposes evolutions but cannot commit (TheEights holds the verdict) |
+| [**Hydra**](https://github.com/lebobo88/Hydra) | LangGraph multi-squad supervisor and dispatcher; hosts the squad packs below | Constitution attestation at intake; envelope recording; budget enforcement; `HydraRegistrar` governs all `Hydra/squads/*` squad.yaml as evolvable resources |
+| [**pair-programmer**](https://github.com/lebobo88/pair-programmer) | Coding harness with 39 sub-agents, 22 teams, taxonomy gates, judges | `pp-bridge` + `pp-watcher` ingest run verdicts + artifacts; `pp-registrar` tracks 59 resources |
+| [**ExecutiveSuite**](https://github.com/lebobo88/ExecutiveSuite) | 20 C-suite agent roles + 4 multi-exec orchestrators | `execsuite-bridge` + `execsuite-watcher`; decision memo ingestion → Agent-BOM graph; 42 governed resources |
+| [**RLM-Creative**](https://github.com/lebobo88/rlm-creative) | 9-phase creative pipeline (14+ sibling projects) | `rlm-bridge` + `rlm-watcher`: event normalization from `events.jsonl`; 1,175 governed resources |
+| [**Xenia**](https://github.com/lebobo88/Xenia-Support) | Customer-support "Hearth" squad — soteria-crew sub-agents, ticket + VoC pipeline (active, not a stub) | `xenia-bridge` normalizes `hearth/progress/events.jsonl` into `domain=customer-support` episodic memory with Eight-Cells tags (Kan→risk, Dui→delight, Xun→influence); `xenia-watcher` tails events; `xenia-registrar` governs ≈48 resources (agents, skills, commands, rubrics, squad, redaction/privilege hooks). Layer-4 PII scrub at the bridge boundary |
+| [**Senate**](https://github.com/lebobo88/Senate) | PhD-level legal wing, "the Curia" — 12 jurists under the Twelve Tables, resolving by the Law of Citations and gatekept by the Tribune's Veto (HITL); Hydra's active `legal-compliance` squad | **Through-Hydra** — no dedicated bridge. The `legal-compliance` squad pack registers via `HydraRegistrar` as `resource:hydra.squad.legal-compliance`, frozen at `risk_class=critical` (alongside `executive` / `governance`). Legal/compliance work writes domain-scoped memory through the shared MCP surface |
+| [**MarketBliss**](https://github.com/lebobo88/MarketBliss) | Enterprise marketing platform — specialist agents across the five `marketing-*` Hydra squad packs (strategy, creative, research, production, ops) | **Through-Hydra** — no dedicated bridge. Each `marketing-*` squad pack registers via `HydraRegistrar` as `resource:hydra.squad.marketing-*` at `risk_class=high` (HITL by default). Campaign work writes domain-scoped (`marketing`) memory through the shared MCP surface |
+
+### AgentMesh — the binding control plane (the tenth layer)
+
+The nine systems above are bound together by **[AgentMesh](https://github.com/lebobo88/AgentMesh)**, a thin, governed **control plane** that unifies them behind ONE registry (SQLite `~/.agentmesh/state.db`; sole writer of `~/.hydra/backends.json`), ONE lifecycle supervisor (Win32 Job Objects + crash-loop breaker + health probes), ONE observability plane (OTEL + structured logs), ONE federated read-only audit timeline (stitched from TheEights / AgentSmith / Hydra chains), ONE external protocol edge (A2A, REST, MCP-over-HTTP), and ONE operator console.
+
+AgentMesh **enforces no governance of its own** — it routes and observes; authority stays with **TheEights → AgentSmith → Hydra** (precedence order), and TheEights remains the root of trust. TheEights enrolls by shipping a [`mesh-manifest.yaml`](./mesh-manifest.yaml) at its repo root, validated fail-closed against AgentMesh's `mesh-manifest.schema.json` (JSON-Schema + constitution attestation via TheEights itself + AgentSmith structural inspection). `meshd` reads that manifest and owns the `eights` entry in `~/.hydra/backends.json`, spawning the daemon and liveness-probing it via the cheap `eights.constitution.get` read. See [ADR-0009](./adrs/0009-agentmesh-enrollment.md) for the enrollment mechanics.
 
 ### How AgentSmith + TheEights Work Together
 
