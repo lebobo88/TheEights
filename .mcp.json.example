@@ -1,8 +1,9 @@
 {
+  "_comment": "Copy this file to .mcp.json and replace <THEEIGHTS_ROOT> with the absolute path to your TheEights checkout. Alternatively, set the EIGHTS_DAEMON_JS env var to the resolved path and the runtime resolver will honor it.",
   "mcpServers": {
     "eights": {
       "command": "node",
-      "args": ["C:/AiAppDeployments/TheEights/daemon/dist/index.js"],
+      "args": ["<THEEIGHTS_ROOT>/daemon/dist/index.js"],
       "env": {
         "EIGHTS_LOG_LEVEL": "info"
       }
