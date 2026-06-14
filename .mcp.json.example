@@ -1,11 +1,18 @@
 {
   "_comment": "Copy this file to .mcp.json and replace <THEEIGHTS_ROOT> with the absolute path to your TheEights checkout. Alternatively, set the EIGHTS_DAEMON_JS env var to the resolved path and the runtime resolver will honor it.",
+  "_comment_llm_judge": "The self-evolution LLM judge (eval/llm-judge.ts) scores prose/persona/design-decision proposals (agent, skill, command, contract, prompt, schema, workflow, team, squad). It is OFF unless EIGHTS_LLM_COMPLETIONS=1. Local-first default provider is Ollama (no cloud gate). Pick a FAST INSTRUCT model — NOT a reasoning model (qwen3:* 'thinks' for 50-140s and emits no answer) and NOT a heavyweight (gpt-oss:20b won't run on constrained hardware). A ~2-4GB instruct model (e.g. llama3.2:3b-instruct, qwen2.5:3b-instruct, gemma2:2b) returns judge JSON in 1-5s. Set EIGHTS_LLM_MODEL to it. Cloud providers (openai/deepseek/authhub) additionally require EIGHTS_ALLOW_CLOUD_PROVIDERS=1 per AGENTS.md invariant #5.",
+  "_comment_manual_judge": "For high-stakes proposals where a small local model is too weak, set EIGHTS_LLM_PROVIDER=manual to route the judge to a human/agent bridge (providers/manual-completer.ts). Pass 1: evaluate() writes each judge prompt to <EIGHTS_MANUAL_JUDGE_DIR>/<key>.request.json and fails closed. The operator (or a high-capability agent like Claude Opus) reads each prompt and stages a verdict file <key>.json = {\"current\":<-1..1>,\"candidate\":<-1..1>,\"notes\":\"...\"}. Pass 2: evaluate() reads the verdict and persists it through the normal audited path (still single-writer, still fail-closed on an unanswered prompt). EIGHTS_MANUAL_JUDGE_DIR defaults to <EIGHTS_HOME>/manual-judge.",
+  "_comment_judge_tiering": "Judge tier matches stakes automatically when EIGHTS_LLM_COMPLETIONS=1: (a) registrar source-drift resyncs are scored by a deterministic safety-diff (eval/prompt-drift.ts) — no LLM; (b) low/medium-risk prose uses the fast automated EIGHTS_LLM_MODEL; (c) HIGH/CRITICAL-risk prose auto-escalates to the manual (human/agent) judge bridge, so stage those verdicts in EIGHTS_MANUAL_JUDGE_DIR. So a typical setup is EIGHTS_LLM_PROVIDER=ollama + a fast model for the bulk, with the manual bridge reserved for high-risk escalations.",
   "mcpServers": {
     "eights": {
       "command": "node",
       "args": ["<THEEIGHTS_ROOT>/daemon/dist/index.js"],
       "env": {
-        "EIGHTS_LOG_LEVEL": "info"
+        "EIGHTS_LOG_LEVEL": "info",
+        "EIGHTS_LLM_COMPLETIONS": "1",
+        "EIGHTS_LLM_PROVIDER": "ollama",
+        "EIGHTS_LLM_MODEL": "llama3.2:3b",
+        "EIGHTS_LLM_FALLBACK": "qwen2.5:3b-instruct"
       }
     }
   }

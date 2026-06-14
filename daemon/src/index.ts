@@ -54,7 +54,9 @@ import { EvalRegistry } from "./engines/eval/registry.js";
 import { LlmJudgeEval } from "./engines/eval/llm-judge.js";
 import { YamlStructuralEval } from "./engines/eval/yaml-structural.js";
 import { RubricBacktestEval } from "./engines/eval/rubric-backtest.js";
+import { PromptDriftEval } from "./engines/eval/prompt-drift.js";
 import { NoopEval } from "./engines/eval/noop.js";
+import { ManualCompleter } from "./providers/manual-completer.js";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { siblingRoot } from "./paths.js";
@@ -229,12 +231,25 @@ async function main(): Promise<void> {
   ]);
   evolution.setWriteRouter(writeRouter);
 
-  // Wire EvalRegistry. Order matters — first match wins. YAML structural for team/workflow/schema first
-  // (cheap, deterministic), then rubric backtest, then LLM judge for prose, then noop catch-all.
+  // Wire EvalRegistry. Order matters — adapters are tried in order; one that
+  // returns not_applicable falls through to the next. Layering:
+  //   1. YamlStructuralEval — deterministic checks for genuine YAML config (team/
+  //      workflow/schema/squad); defers prose.
+  //   2. RubricBacktestEval — heuristic structural score for rubric kind.
+  //   3. PromptDriftEval — diff-aware safety check for registrar source-drift
+  //      resyncs; defers genuine prose edits to the quality judge.
+  //   4. LlmJudgeEval — quality judge for prose. Judge tier matches stakes:
+  //      low/medium risk → fast automated model; high/critical → manual (human/
+  //      agent) judge bridge, which fails closed until a verdict is staged.
+  //   5. NoopEval — HITL-only-by-design kinds (policy/tool/hook): delta=0.
+  const escalationJudge = llmEnabled
+    ? { completer: new ManualCompleter(providerCfg.manualJudgeDir), atOrAbove: "high" as const }
+    : undefined;
   const evalRegistry = new EvalRegistry();
   evalRegistry.register(new YamlStructuralEval());
   evalRegistry.register(new RubricBacktestEval());
-  evalRegistry.register(new LlmJudgeEval(evolution, completer));
+  evalRegistry.register(new PromptDriftEval());
+  evalRegistry.register(new LlmJudgeEval(evolution, completer, escalationJudge));
   evalRegistry.register(new NoopEval());
   evolution.setEvaluator(evalRegistry);
 

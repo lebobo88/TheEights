@@ -63,6 +63,82 @@ describe("eval adapters", () => {
     const fallback = await reg.evaluate({ rid: "x", kind: "agent", consumer: "execsuite", current_content: "foo", candidate_content: "bar" });
     expect(fallback.eval_delta).toBe(0);
   });
+
+  it("YamlStructuralEval defers (not_applicable) on prose, never throws or emits garbage keys", async () => {
+    const a = new YamlStructuralEval();
+    // Real failure modes from the R6 batch: prose design-decisions of kind=schema.
+    const r1 = await a.evaluate({
+      rid: "x", kind: "schema", consumer: "rlm",
+      current_content: "Roles are admin, collaborator, client, anonymous.",
+      candidate_content: "Denormalize entity_mode onto hot-path tables (invoices, contracts) only; join elsewhere.",
+    });
+    expect(r1.not_applicable).toBe(true);
+    expect(r1.eval_delta).not.toBe(-1);          // no spurious failure verdict
+    expect(r1.notes).not.toMatch(/\b0, 1, 2\b/); // no character-index key enumeration
+  });
+
+  it("YamlStructuralEval defers on a mapping-vs-prose mix without throwing", async () => {
+    const a = new YamlStructuralEval();
+    // The exact crash shape from the R6 batch: current parses to a YAML mapping,
+    // candidate is bare prose (parses to a string). Old code did `key in <string>`
+    // and threw "Cannot use 'in' operator". Now it must defer cleanly.
+    const r = await a.evaluate({
+      rid: "x", kind: "schema", consumer: "eights",
+      current_content: "name: cms\nblocks: [hero, footer]\n",
+      candidate_content: "Add twenty new content blocks across the services and contact pages without removing existing ones.",
+    });
+    expect(r.not_applicable).toBe(true);
+  });
+
+  it("YamlStructuralEval defers prose that parses as a single-key mapping (space in key)", async () => {
+    const a = new YamlStructuralEval();
+    // The R6 'postgis_upgrade' / 'audit_triggers_scope' shape: a prose sentence
+    // whose leading "Word word:" makes YAML produce {"PostGIS extension": ...}.
+    const r = await a.evaluate({
+      rid: "x", kind: "schema", consumer: "rlm",
+      current_content: "PostGIS extension: present in the current data model.",
+      candidate_content: "Defer the PostGIS extension until a Phase 6 geospatial need is proven.",
+    });
+    expect(r.not_applicable).toBe(true);
+    expect(r.eval_delta).not.toBe(-1);
+  });
+
+  it("EvalRegistry falls through a deferring structural adapter to the next match", async () => {
+    const reg = new EvalRegistry();
+    reg.register(new YamlStructuralEval());
+    reg.register(new NoopEval());
+    // kind=schema prose: structural defers -> noop applies (delta 0).
+    const r = await reg.evaluate({
+      rid: "x", kind: "schema", consumer: "rlm",
+      current_content: "prose A with no mapping",
+      candidate_content: "prose B with no mapping",
+    });
+    expect(r.not_applicable).toBeFalsy();
+    expect(r.eval_delta).toBe(0);
+    expect(r.notes).toMatch(/noop/);
+  });
+
+  it("EvalRegistry fails closed (evaluator_missing) when every matching adapter defers", async () => {
+    const reg = new EvalRegistry();
+    reg.register(new YamlStructuralEval()); // the only adapter; defers on prose
+    const r = await reg.evaluate({
+      rid: "x", kind: "schema", consumer: "rlm",
+      current_content: "prose A", candidate_content: "prose B",
+    });
+    expect(r.evaluator_missing).toBe(true);
+    expect(r.eval_delta).toBe(-1);
+  });
+
+  it("EvalRegistry covers kind=squad (previously evaluator_missing)", async () => {
+    const reg = new EvalRegistry();
+    reg.register(new YamlStructuralEval());
+    reg.register(new NoopEval());
+    const r = await reg.evaluate({
+      rid: "x", kind: "squad", consumer: "hydra",
+      current_content: "entrypoint: stub", candidate_content: "entrypoint: claude-skill",
+    });
+    expect(r.evaluator_missing).toBeFalsy();
+  });
 });
 
 describe("evolution engine uses the evaluator on evaluate()", () => {
@@ -79,6 +155,10 @@ describe("evolution engine uses the evaluator on evaluate()", () => {
     dir = mkdtempSync(join(tmpdir(), "eights-eval-"));
     sql = new SqliteStore(join(dir, "state.db"));
     sql.migrate();
+    // propose() requires the acting actor to exist in the actors table.
+    sql.db.prepare(
+      `INSERT OR IGNORE INTO actors(actor_id, kind, created_at) VALUES (?, 'human', datetime('now'))`,
+    ).run("eval-test");
     const audit = new AuditEngine(sql, join(dir, "events"));
     const policy = new PolicyEngine(sql);
     engine = new EvolutionEngine(sql, join(dir, "resources"), policy, audit);

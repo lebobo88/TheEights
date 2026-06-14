@@ -107,6 +107,8 @@ export interface EvaluatorAdapter {
     rid: string;
     kind: ResourceKind;
     consumer: Consumer;
+    risk_class: RiskClass;
+    justification: string;
     current_content: string;
     candidate_content: string;
   }): Promise<{ eval_delta: number; metric_scores: Record<string, number>; notes: string; evaluator_missing?: boolean }>;
@@ -486,6 +488,8 @@ export class EvolutionEngine {
           rid: resource.rid,
           kind: resource.kind,
           consumer: resource.consumer,
+          risk_class: resource.risk_class,
+          justification: proposal.justification,
           current_content: current,
           candidate_content: proposal.candidate_content,
         });

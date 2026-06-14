@@ -8,9 +8,14 @@ import { OllamaCompleter } from "../engines/eval/completer.js";
 import { OpenAiEmbedder } from "./openai-embedder.js";
 import { OpenAiCompleter } from "./openai-completer.js";
 import { DeepSeekCompleter } from "./deepseek-completer.js";
+import { ManualCompleter } from "./manual-completer.js";
 import { loadAuthHubEmbedder, loadAuthHubCompleter } from "./authhub-stub.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
-const ProviderName = z.enum(["ollama", "openai", "deepseek", "authhub"]);
+// "manual" is a completion-only provider: a human/agent judge bridge (see
+// manual-completer.ts). It is local (no cloud gate) and cannot be an embedder.
+const ProviderName = z.enum(["ollama", "openai", "deepseek", "authhub", "manual"]);
 
 const ProviderConfigSchema = z.object({
   provider: ProviderName.default("ollama"),
@@ -41,6 +46,9 @@ const ProviderConfigSchema = z.object({
   authhubEmbedDim: z.coerce.number().int().positive().default(1536),
   authhubLlmModel: z.string().default("gpt-4o-mini"),
   authhubRouteAlias: z.string().optional(),
+
+  // Manual (human/agent) judge bridge — directory of staged verdict files.
+  manualJudgeDir: z.string().default(join(homedir(), ".eights", "manual-judge")),
 });
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
@@ -80,6 +88,8 @@ export function loadProviderConfig(): ProviderConfig {
     authhubEmbedDim: env.EIGHTS_AUTHHUB_EMBED_DIM,
     authhubLlmModel: env.EIGHTS_AUTHHUB_LLM_MODEL,
     authhubRouteAlias: env.EIGHTS_AUTHHUB_ROUTE_ALIAS,
+
+    manualJudgeDir: env.EIGHTS_MANUAL_JUDGE_DIR,
   });
 }
 
@@ -119,6 +129,9 @@ export async function createEmbedder(cfg: ProviderConfig): Promise<Embedder> {
         routeAlias: cfg.authhubRouteAlias,
       });
     }
+
+    case "manual":
+      throw new Error("provider 'manual' is completion-only (judge bridge); it cannot be used as an embedder");
   }
 }
 
@@ -129,6 +142,9 @@ export async function createCompleter(cfg: ProviderConfig): Promise<Completer> {
   requireCloudGate(p, cfg);
 
   switch (p) {
+    case "manual":
+      return new ManualCompleter(cfg.manualJudgeDir);
+
     case "ollama":
       return new OllamaCompleter(cfg.ollamaUrl, cfg.ollamaLlmModel, cfg.ollamaLlmFallback);
 
