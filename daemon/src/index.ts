@@ -35,7 +35,7 @@ import { IolausJob } from "./cognitive/iolaus.js";
 import { AuditVerifierJob, type AuditGate } from "./cognitive/audit-verifier.js";
 import { PromptRegistrar } from "./engines/registrars/prompts.js";
 import { OtelSink } from "./observability/otel-sink.js";
-import { loadProviderConfig, createEmbedder, createCompleter } from "./providers/index.js";
+import { loadProviderConfig, createEmbedder, createCompleter, inlineBudget, backgroundBudget } from "./providers/index.js";
 import { PpBridge } from "./adapters/pp-bridge.js";
 import { ExecSuiteBridge } from "./adapters/execsuite-bridge.js";
 import { RlmBridge } from "./adapters/rlm-bridge.js";
@@ -183,6 +183,10 @@ async function main(): Promise<void> {
 
   const policy = new PolicyEngine(sql);
   const providerCfg = loadProviderConfig();
+  // Inline = completions awaited DURING an MCP request (cells.classify,
+  // evolution.evaluate): tight, no-retry budget. Background = miner: tolerant.
+  const inlineLlmBudget = inlineBudget(providerCfg);
+  const bgLlmBudget = backgroundBudget(providerCfg);
   const embedder = await createEmbedder(providerCfg);
   const completer = await createCompleter(providerCfg);
   if (embedder.dim() !== cfg.embeddingDim) {
@@ -249,7 +253,7 @@ async function main(): Promise<void> {
   evalRegistry.register(new YamlStructuralEval());
   evalRegistry.register(new RubricBacktestEval());
   evalRegistry.register(new PromptDriftEval());
-  evalRegistry.register(new LlmJudgeEval(evolution, completer, escalationJudge));
+  evalRegistry.register(new LlmJudgeEval(evolution, completer, escalationJudge, inlineLlmBudget));
   evalRegistry.register(new NoopEval());
   evolution.setEvaluator(evalRegistry);
 
@@ -265,7 +269,7 @@ async function main(): Promise<void> {
   // hitl-only proposals without a circular import.
   evolution.setGovernance(governance);
   const redaction = new RedactionEngine(evolution, policy, audit);
-  const classifier = new CellClassifier(completer);
+  const classifier = new CellClassifier(completer, inlineLlmBudget);
 
   const otel = new OtelSink(
     { enabled: process.env.EIGHTS_OTEL_ENABLED === "1",
@@ -314,7 +318,7 @@ async function main(): Promise<void> {
     xenia: new XeniaRegistrar(evolution, log),
   };
 
-  const miner = new Miner(sql, memory, audit, log, evolution, completer);
+  const miner = new Miner(sql, memory, audit, log, evolution, completer, { budget: bgLlmBudget });
 
   const bom = new BomEngine(sql);
 
@@ -358,6 +362,23 @@ async function main(): Promise<void> {
   // The return tuple + WAL size are logged so checkpoint starvation (busy=1,
   // WAL not shrinking) is visible to operators instead of silently ballooning.
   let checkpointTimer: NodeJS.Timeout | null = null;
+  // D2 — periodic process memory/CPU gauge. Time-correlating these lines with the
+  // server seam's slow-call warns is the evidence for whether eights latency
+  // spikes track host RSS pressure (external WSL2/Ollama thrash) rather than
+  // eights's own work. Set EIGHTS_MEM_GAUGE_MS=0 to disable.
+  let memGaugeTimer: NodeJS.Timeout | null = null;
+  const MEM_GAUGE_INTERVAL_MS = Number(process.env.EIGHTS_MEM_GAUGE_MS ?? 60_000);
+  let lastCpu = process.cpuUsage();
+  const runMemGauge = (): void => {
+    const m = process.memoryUsage();
+    const cpu = process.cpuUsage(lastCpu);
+    lastCpu = process.cpuUsage();
+    log.info(
+      { rss: m.rss, heap_used: m.heapUsed, external: m.external,
+        cpu_user_us: cpu.user, cpu_system_us: cpu.system },
+      "proc gauge",
+    );
+  };
   const CHECKPOINT_INTERVAL_MS = 5 * 60 * 1000;
   const runMaintenanceCheckpoint = (mode: "PASSIVE" | "TRUNCATE"): void => {
     try {
@@ -376,6 +397,7 @@ async function main(): Promise<void> {
   const shutdown = async (sig: string): Promise<void> => {
     log.info({ sig }, "shutting down");
     if (checkpointTimer) { clearInterval(checkpointTimer); checkpointTimer = null; }
+    if (memGaugeTimer) { clearInterval(memGaugeTimer); memGaugeTimer = null; }
     ppWatcher.stop(); execWatcher.stop(); rlmWatcher.stop(); xeniaWatcher.stop(); miner.stop();
     stewardJob.stop(); costJob.stop(); iolausJob.stop(); auditVerifier.stop(); otel.stop();
     try { await graph.close(); } catch { /* ignore */ }
@@ -394,6 +416,11 @@ async function main(): Promise<void> {
     name: "eights-daemon",
     version: "0.3.0",
     ready: () => ({ ok: auditReady, reason: auditReason }),
+    log,
+    // Fire before the Hydra gateway's ~120s per-call timeout so an opaque
+    // gateway timeout becomes a fast, attributable "tool_deadline_exceeded".
+    deadlineMs: Number(process.env.EIGHTS_TOOL_DEADLINE_MS ?? 90_000),
+    slowWarnMs: Number(process.env.EIGHTS_TOOL_SLOW_WARN_MS ?? 2_000),
   });
   log.info("eights-daemon stdio MCP transport active");
 
@@ -401,6 +428,11 @@ async function main(): Promise<void> {
   // unref() so the timer never holds the process open on its own.
   checkpointTimer = setInterval(() => runMaintenanceCheckpoint("PASSIVE"), CHECKPOINT_INTERVAL_MS);
   checkpointTimer.unref?.();
+
+  if (MEM_GAUGE_INTERVAL_MS > 0) {
+    memGaugeTimer = setInterval(runMemGauge, MEM_GAUGE_INTERVAL_MS);
+    memGaugeTimer.unref?.();
+  }
 
   // Verify the chain off the critical path, then open the gate and start the
   // audited background producers. Tools are refused until this resolves.

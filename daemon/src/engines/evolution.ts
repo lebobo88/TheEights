@@ -803,8 +803,13 @@ export class EvolutionEngine {
    *
    * FIX 1b: accepts optional envelope; when present emits an "evolution.read" audit event.
    */
-  detectDriftPage(opts: PaginationOpts = {}, env?: Envelope): Page<{ rid: string; drift_kind: "registry" | "source"; on_disk_hash: string; recorded_hash?: string; source_path?: string; expected_version?: string }> & { total_resources: number; total_registry: number; total_sources: number } {
+  async detectDriftPage(opts: PaginationOpts = {}, env?: Envelope): Promise<Page<{ rid: string; drift_kind: "registry" | "source"; on_disk_hash: string; recorded_hash?: string; source_path?: string; expected_version?: string }> & { total_resources: number; total_registry: number; total_sources: number }> {
     const { limit, offset } = clampPage(opts);
+    // Yield the event loop every N resources so this full on-disk scan (reads
+    // every resource version + every source file) does not freeze concurrent
+    // MCP calls on the single daemon event loop, and so the server seam's
+    // per-tool deadline can actually fire mid-scan under host RAM thrash.
+    const YIELD_EVERY = 200;
     const resourceCountRow = this.sql.db.prepare(`SELECT COUNT(*) as n FROM resources`).get() as { n: number };
     const total_resources = resourceCountRow.n;
 
@@ -829,7 +834,9 @@ export class EvolutionEngine {
       entryIndex++;
     };
 
+    let scanned = 0;
     for (const r of allResources) {
+      if (++scanned % YIELD_EVERY === 0) await new Promise<void>((resolve) => setImmediate(resolve));
       // Registry drift
       const content = this.readVersion(r.rid, r.current_version);
       if (content === null) {
@@ -894,10 +901,15 @@ export class EvolutionEngine {
    *
    * Does NOT bypass Run #11's commit()/approve() gates — only creates proposals.
    */
-  reconcileDrift(env: Envelope, opts: ReconcileDriftOpts = {}): ReconcileDriftResult {
+  async reconcileDrift(env: Envelope, opts: ReconcileDriftOpts = {}): Promise<ReconcileDriftResult> {
     // dryRun defaults to TRUE — must be explicitly false to create proposals.
     const dryRun = opts.dryRun !== false;
     const { limit, offset } = clampPage({ limit: opts.limit, offset: opts.offset });
+    // Yield every N resources so the full scan does not freeze concurrent MCP
+    // calls and the per-tool deadline can fire mid-scan. Dedup uses an in-memory
+    // Set + DB unique index, both unaffected by yielding, so results are
+    // identical to the synchronous version (behavior-preserving).
+    const YIELD_EVERY = 200;
 
     // Determine the resource scope: all resources or a single rid.
     const allResourceRows: Array<{ rid: string; current_version: string }> = opts.rid
@@ -931,7 +943,9 @@ export class EvolutionEngine {
       planIndex++;
     };
 
+    let scanned = 0;
     for (const r of allResourceRows) {
+      if (++scanned % YIELD_EVERY === 0) await new Promise<void>((resolve) => setImmediate(resolve));
       const resource = this.getResource(r.rid);
       if (!resource) continue; // defensive
 

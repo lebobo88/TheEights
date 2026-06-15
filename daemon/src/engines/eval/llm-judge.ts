@@ -11,6 +11,7 @@
 import type { Consumer, ResourceKind, RiskClass } from "../../schemas/resource.js";
 import type { EvolutionEngine } from "../evolution.js";
 import type { Completer } from "./completer.js";
+import type { CompletionBudget } from "../../completer.js";
 import type { EvalAdapter, EvalInput, EvalResult } from "./registry.js";
 
 const RISK_RANK: Record<RiskClass, number> = { low: 0, medium: 1, high: 2, critical: 3 };
@@ -44,6 +45,10 @@ export class LlmJudgeEval implements EvalAdapter {
     private readonly engine: EvolutionEngine,
     private readonly llm: Completer,
     private readonly escalation?: JudgeEscalation,
+    // Inline budget: evolution.evaluate is awaited during an MCP request, so the
+    // judge completion is bounded tightly (the EvalInput surface carries no
+    // AbortSignal, so the timeout — not the seam deadline — is the ceiling here).
+    private readonly budget?: CompletionBudget,
   ) {}
 
   /** Pick the judge for this proposal: escalate high-risk prose to the stronger judge. */
@@ -91,7 +96,7 @@ export class LlmJudgeEval implements EvalAdapter {
       "Respond with JSON only.",
     ].join("\n");
 
-    const raw = await judge.complete(system, user, { temperature: 0.1, maxTokens: 256 });
+    const raw = await judge.complete(system, user, { temperature: 0.1, maxTokens: 256, timeoutMs: this.budget?.timeoutMs, maxRetries: this.budget?.maxRetries });
     if (!raw) {
       return { eval_delta: -1, evaluator_missing: true, metric_scores: {}, notes: `judge returned no content — blocked (evaluator_missing)${tag}` };
     }

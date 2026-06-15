@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Embedder } from "../embeddings.js";
-import type { Completer } from "../completer.js";
+import type { Completer, CompletionBudget } from "../completer.js";
 import { NullEmbedder } from "../embeddings.js";
 import { NullCompleter } from "../completer.js";
 import { OllamaEmbedder } from "../embeddings.js";
@@ -23,6 +23,16 @@ const ProviderConfigSchema = z.object({
   llmProvider: ProviderName.default("ollama"),
   allowCloudProviders: z.boolean().default(false),
   llmEnabled: z.boolean().default(false),
+
+  // Per-call completion budgets. Inline = completions awaited DURING an MCP
+  // request (cells.classify, evolution.evaluate): tight timeout, no retries, so
+  // a degraded provider fails fast instead of stacking into a >120s gateway
+  // timeout. Background = miner, off the request path: tolerant.
+  inlineLlmTimeoutMs: z.coerce.number().int().positive().default(20_000),
+  inlineLlmRetries: z.coerce.number().int().min(0).default(0),
+  bgLlmTimeoutMs: z.coerce.number().int().positive().default(30_000),
+  bgLlmRetries: z.coerce.number().int().min(0).default(2),
+  ollamaTimeoutMs: z.coerce.number().int().positive().default(20_000),
 
   ollamaUrl: z.string().default("http://localhost:11434"),
   ollamaEmbedModel: z.string().default("nomic-embed-text"),
@@ -53,6 +63,16 @@ const ProviderConfigSchema = z.object({
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 
+/** Tight budget for completions awaited DURING an MCP request. */
+export function inlineBudget(cfg: ProviderConfig): CompletionBudget {
+  return { timeoutMs: cfg.inlineLlmTimeoutMs, maxRetries: cfg.inlineLlmRetries };
+}
+
+/** Tolerant budget for background completions (miner). */
+export function backgroundBudget(cfg: ProviderConfig): CompletionBudget {
+  return { timeoutMs: cfg.bgLlmTimeoutMs, maxRetries: cfg.bgLlmRetries };
+}
+
 const CLOUD_PROVIDERS = new Set(["openai", "deepseek", "authhub"]);
 
 export function loadProviderConfig(): ProviderConfig {
@@ -65,6 +85,12 @@ export function loadProviderConfig(): ProviderConfig {
     llmProvider: env.EIGHTS_LLM_PROVIDER ?? base,
     allowCloudProviders: env.EIGHTS_ALLOW_CLOUD_PROVIDERS === "1",
     llmEnabled: env.EIGHTS_LLM_COMPLETIONS === "1",
+
+    inlineLlmTimeoutMs: env.EIGHTS_INLINE_LLM_TIMEOUT_MS,
+    inlineLlmRetries: env.EIGHTS_INLINE_LLM_RETRIES,
+    bgLlmTimeoutMs: env.EIGHTS_BG_LLM_TIMEOUT_MS,
+    bgLlmRetries: env.EIGHTS_BG_LLM_RETRIES,
+    ollamaTimeoutMs: env.EIGHTS_OLLAMA_TIMEOUT_MS,
 
     ollamaUrl: env.EIGHTS_OLLAMA_URL,
     ollamaEmbedModel: env.EIGHTS_EMBEDDING_MODEL,
@@ -108,7 +134,7 @@ export async function createEmbedder(cfg: ProviderConfig): Promise<Embedder> {
 
   switch (p) {
     case "ollama":
-      return new OllamaEmbedder(cfg.ollamaUrl, cfg.ollamaEmbedModel, cfg.ollamaEmbedDim);
+      return new OllamaEmbedder(cfg.ollamaUrl, cfg.ollamaEmbedModel, cfg.ollamaEmbedDim, cfg.ollamaTimeoutMs);
 
     case "openai": {
       if (!cfg.openaiApiKey) throw new Error("EIGHTS_OPENAI_API_KEY required when EIGHTS_EMBED_PROVIDER=openai");
@@ -146,7 +172,7 @@ export async function createCompleter(cfg: ProviderConfig): Promise<Completer> {
       return new ManualCompleter(cfg.manualJudgeDir);
 
     case "ollama":
-      return new OllamaCompleter(cfg.ollamaUrl, cfg.ollamaLlmModel, cfg.ollamaLlmFallback);
+      return new OllamaCompleter(cfg.ollamaUrl, cfg.ollamaLlmModel, cfg.ollamaLlmFallback, cfg.ollamaTimeoutMs);
 
     case "openai": {
       if (!cfg.openaiApiKey) throw new Error("EIGHTS_OPENAI_API_KEY required when EIGHTS_LLM_PROVIDER=openai");

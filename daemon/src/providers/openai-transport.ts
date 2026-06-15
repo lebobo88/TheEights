@@ -5,6 +5,7 @@
  * Handles auth, retry with exponential backoff, timeout, error redaction,
  * and HTTPS-only enforcement for non-loopback hosts.
  */
+import { combineTimeout } from "../abort-util.js";
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const LOCALHOST_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
@@ -102,7 +103,7 @@ export class OpenAiTransport {
   async chatCompletion(
     model: string,
     messages: ChatMessage[],
-    opts: { maxTokens?: number; temperature?: number } = {},
+    opts: { maxTokens?: number; temperature?: number; timeoutMs?: number; maxRetries?: number; signal?: AbortSignal } = {},
   ): Promise<string | null> {
     const body: Record<string, unknown> = {
       model,
@@ -112,7 +113,11 @@ export class OpenAiTransport {
     if (opts.temperature != null) body.temperature = opts.temperature;
     if (opts.maxTokens != null) body.max_completion_tokens = opts.maxTokens;
 
-    const data = await this.post<ChatCompletionResponse>("/v1/chat/completions", body);
+    const data = await this.post<ChatCompletionResponse>("/v1/chat/completions", body, {
+      timeoutMs: opts.timeoutMs,
+      maxRetries: opts.maxRetries,
+      signal: opts.signal,
+    });
     if (!data) return null;
 
     const content = data.choices?.[0]?.message?.content;
@@ -131,10 +136,21 @@ export class OpenAiTransport {
     };
   }
 
-  private async post<T>(path: string, body: unknown): Promise<T | null> {
+  private async post<T>(
+    path: string,
+    body: unknown,
+    opts: { timeoutMs?: number; maxRetries?: number; signal?: AbortSignal } = {},
+  ): Promise<T | null> {
+    // Per-call budget overrides the ctor defaults. Inline (request-path) callers
+    // pass a tight timeout + maxRetries:0 so a degraded provider fails fast and
+    // attributably instead of stacking 4×30s into a >120s gateway timeout.
+    const timeoutMs = opts.timeoutMs ?? this.timeoutMs;
+    const maxRetries = opts.maxRetries ?? this.maxRetries;
     let lastErr: string | null = null;
 
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // Honor an external (request-deadline) abort between attempts.
+      if (opts.signal?.aborted) { this.lastError = "aborted"; return null; }
       if (attempt > 0) {
         const delayMs = 1000 * Math.pow(2, attempt - 1);
         await new Promise(r => setTimeout(r, delayMs));
@@ -145,13 +161,13 @@ export class OpenAiTransport {
           method: "POST",
           headers: this.headers(),
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(this.timeoutMs),
+          signal: combineTimeout(timeoutMs, opts.signal),
         });
 
         if (!res.ok) {
           const snippet = await res.text().catch(() => "");
           lastErr = redact(`HTTP ${res.status}: ${snippet.slice(0, 200)}`);
-          if (RETRYABLE_STATUS.has(res.status) && attempt < this.maxRetries) continue;
+          if (RETRYABLE_STATUS.has(res.status) && attempt < maxRetries) continue;
           this.lastError = lastErr;
           return null;
         }
@@ -160,7 +176,7 @@ export class OpenAiTransport {
         return data;
       } catch (err) {
         lastErr = redact(err instanceof Error ? err.message : String(err));
-        if (attempt < this.maxRetries) continue;
+        if (attempt < maxRetries) continue;
       }
     }
 

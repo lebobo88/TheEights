@@ -12,12 +12,14 @@ import type { MemoryEngine } from "./memory.js";
 import type { AuditEngine } from "./audit.js";
 import type { EvolutionEngine } from "./evolution.js";
 import type { Completer } from "./eval/completer.js";
+import type { CompletionBudget } from "../completer.js";
 import type { Envelope } from "../schemas/envelope.js";
 import type { Resource } from "../schemas/resource.js";
 
 export class Miner {
   private timer: NodeJS.Timeout | null = null;
   private readonly pollMs: number;
+  private readonly budget?: CompletionBudget;
 
   constructor(
     private readonly sql: SqliteStore,
@@ -26,9 +28,10 @@ export class Miner {
     private readonly log: Logger,
     private readonly evolution?: EvolutionEngine,
     private readonly llm?: Completer,
-    opts: { pollMs?: number } = {},
+    opts: { pollMs?: number; budget?: CompletionBudget } = {},
   ) {
     this.pollMs = opts.pollMs ?? 3600_000;
+    this.budget = opts.budget;
   }
 
   startScheduled(): void {
@@ -145,7 +148,7 @@ export class Miner {
       "",
       "Revise the artifact to better catch the pattern above. Preserve formatting.",
     ].join("\n");
-    const candidate = await this.llm.complete(system, user, { temperature: 0.2, maxTokens: 1200 });
+    const candidate = await this.llm.complete(system, user, { temperature: 0.2, maxTokens: 1200, timeoutMs: this.budget?.timeoutMs, maxRetries: this.budget?.maxRetries });
     if (!candidate || candidate.trim() === current.trim()) return false;
     try {
       const prop = this.evolution.propose(env, {

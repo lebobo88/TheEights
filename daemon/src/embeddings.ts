@@ -23,6 +23,9 @@ export class OllamaEmbedder implements Embedder {
     private readonly url: string = process.env.EIGHTS_OLLAMA_URL ?? "http://localhost:11434",
     private readonly model: string = process.env.EIGHTS_EMBEDDING_MODEL ?? "nomic-embed-text",
     private readonly dimension: number = Number(process.env.EIGHTS_EMBEDDING_DIM ?? 768),
+    // Bound every Ollama fetch so a wedged local model server can never hang an
+    // MCP call (memory.add / memory.search embed inline) indefinitely.
+    private readonly timeoutMs: number = Number(process.env.EIGHTS_OLLAMA_TIMEOUT_MS ?? 20_000),
   ) {}
 
   dim(): number { return this.dimension; }
@@ -30,7 +33,7 @@ export class OllamaEmbedder implements Embedder {
   async available(): Promise<boolean> {
     if (this.cachedAvailable !== null) return this.cachedAvailable;
     try {
-      const res = await fetch(`${this.url}/api/tags`, { method: "GET" });
+      const res = await fetch(`${this.url}/api/tags`, { method: "GET", signal: AbortSignal.timeout(this.timeoutMs) });
       this.cachedAvailable = res.ok;
     } catch {
       this.cachedAvailable = false;
@@ -45,6 +48,7 @@ export class OllamaEmbedder implements Embedder {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: this.model, prompt: text }),
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");

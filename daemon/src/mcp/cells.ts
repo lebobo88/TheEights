@@ -68,8 +68,8 @@ export function registerCellTools(sql: SqliteStore, classifier: CellClassifier, 
     "eights.cells.classify": {
       description: "Classify a text into the 8-cell vocabulary. Keyword-first; falls back to local Ollama completer when keywords are ambiguous.",
       schema: ClassifyArgs,
-      handler: async (a: z.infer<typeof ClassifyArgs>) => {
-        const cell = await classifier.classifyAsync(a.text, a.summary);
+      handler: async (a: z.infer<typeof ClassifyArgs>, ctx?: { signal: AbortSignal }) => {
+        const cell = await classifier.classifyAsync(a.text, a.summary, ctx?.signal);
         return { cell };
       },
     },

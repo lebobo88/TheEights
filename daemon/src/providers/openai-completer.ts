@@ -1,4 +1,4 @@
-import type { Completer } from "../completer.js";
+import type { Completer, CompletionOpts } from "../completer.js";
 import { OpenAiTransport } from "./openai-transport.js";
 
 export class OpenAiCompleter implements Completer {
@@ -23,7 +23,7 @@ export class OpenAiCompleter implements Completer {
   async complete(
     system: string,
     user: string,
-    opts: { maxTokens?: number; temperature?: number } = {},
+    opts: CompletionOpts = {},
   ): Promise<string | null> {
     const result = await this.transport.chatCompletion(
       this.model,
@@ -31,7 +31,13 @@ export class OpenAiCompleter implements Completer {
         { role: "system", content: system },
         { role: "user", content: user },
       ],
-      { maxTokens: opts.maxTokens ?? 512, temperature: opts.temperature ?? 0.2 },
+      {
+        maxTokens: opts.maxTokens ?? 512,
+        temperature: opts.temperature ?? 0.2,
+        timeoutMs: opts.timeoutMs,
+        maxRetries: opts.maxRetries,
+        signal: opts.signal,
+      },
     );
     if (!result) {
       this.lastError = this.transport.lastError;

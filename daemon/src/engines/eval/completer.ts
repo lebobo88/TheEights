@@ -11,10 +11,11 @@
  *   EIGHTS_LLM_FALLBACK (default: qwen3:4b)
  */
 
-export type { Completer } from "../../completer.js";
+export type { Completer, CompletionOpts } from "../../completer.js";
 export { NullCompleter } from "../../completer.js";
 
-import type { Completer } from "../../completer.js";
+import type { Completer, CompletionOpts } from "../../completer.js";
+import { combineTimeout } from "../../abort-util.js";
 
 export class OllamaCompleter implements Completer {
   lastError: string | null = null;
@@ -26,6 +27,9 @@ export class OllamaCompleter implements Completer {
     private readonly url: string = process.env.EIGHTS_OLLAMA_URL ?? "http://localhost:11434",
     primary: string = process.env.EIGHTS_LLM_MODEL ?? "gpt-oss:20b",
     fallback: string = process.env.EIGHTS_LLM_FALLBACK ?? "qwen3:4b",
+    // Bound every Ollama fetch so a wedged local model server can never hang an
+    // MCP call indefinitely (a bare fetch has no default timeout).
+    private readonly timeoutMs: number = Number(process.env.EIGHTS_OLLAMA_TIMEOUT_MS ?? 20_000),
   ) {
     this.models = [primary, fallback];
     this.enabled = process.env.EIGHTS_LLM_COMPLETIONS === "1";
@@ -35,14 +39,15 @@ export class OllamaCompleter implements Completer {
     if (!this.enabled) return false;
     if (this.cachedAvailable !== null) return this.cachedAvailable;
     try {
-      const res = await fetch(`${this.url}/api/tags`);
+      const res = await fetch(`${this.url}/api/tags`, { signal: AbortSignal.timeout(this.timeoutMs) });
       this.cachedAvailable = res.ok;
     } catch { this.cachedAvailable = false; }
     return this.cachedAvailable;
   }
 
-  async complete(system: string, user: string, opts: { maxTokens?: number; temperature?: number } = {}): Promise<string | null> {
+  async complete(system: string, user: string, opts: CompletionOpts = {}): Promise<string | null> {
     if (!(await this.available())) return null;
+    const timeoutMs = opts.timeoutMs ?? this.timeoutMs;
     for (const model of this.models) {
       try {
         const res = await fetch(`${this.url}/api/generate`, {
@@ -58,6 +63,7 @@ export class OllamaCompleter implements Completer {
               num_predict: opts.maxTokens ?? 512,
             },
           }),
+          signal: combineTimeout(timeoutMs, opts.signal),
         });
         if (!res.ok) {
           this.lastError = `Ollama ${model} ${res.status}`;

@@ -16,6 +16,7 @@
  */
 import type { Cell } from "../schemas/memory.js";
 import type { Completer } from "../engines/eval/completer.js";
+import type { CompletionBudget } from "../completer.js";
 
 const KEYWORDS: Record<Cell, RegExp> = {
   vision:      /\b(vision|mission|north[- ]?star|long[- ]?term|strategy|objective|aspirat|charter|covenant|constitution)\b/i,
@@ -29,7 +30,10 @@ const KEYWORDS: Record<Cell, RegExp> = {
 };
 
 export class CellClassifier {
-  constructor(private readonly completer?: Completer) {}
+  constructor(
+    private readonly completer?: Completer,
+    private readonly budget?: CompletionBudget,
+  ) {}
 
   classify(text: string, summary?: string): Cell | null {
     const corpus = `${summary ?? ""}\n${text}`.slice(0, 8_000);
@@ -47,7 +51,7 @@ export class CellClassifier {
     return best;
   }
 
-  async classifyAsync(text: string, summary?: string): Promise<Cell | null> {
+  async classifyAsync(text: string, summary?: string, signal?: AbortSignal): Promise<Cell | null> {
     const sync = this.classify(text, summary);
     if (sync) return sync;
     if (!this.completer) return null;
@@ -56,7 +60,7 @@ export class CellClassifier {
     const out = await this.completer.complete(
       "You are a classifier. Return exactly one token from this list and nothing else: vision context triggers influence risk focus constraints delight",
       `Classify the cell of this text:\n\n${(summary ?? text).slice(0, 2_000)}`,
-      { maxTokens: 8, temperature: 0 },
+      { maxTokens: 8, temperature: 0, timeoutMs: this.budget?.timeoutMs, maxRetries: this.budget?.maxRetries, signal },
     );
     if (!out) return null;
     const token = out.trim().toLowerCase().split(/\s+/)[0] ?? "";
