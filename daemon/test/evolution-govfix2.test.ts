@@ -38,6 +38,8 @@ function makeEngine(tag: string): { dir: string; sql: SqliteStore; engine: Evolu
   const dir = mkdtempSync(join(tmpdir(), `eights-gf2-${tag}-`));
   const sql = new SqliteStore(join(dir, "state.db"));
   sql.migrate();
+  // propose() requires a registered actor (FIX 1a write-authz gate).
+  sql.db.prepare(`INSERT OR IGNORE INTO actors(actor_id, kind, created_at) VALUES (?, 'agent', datetime('now'))`).run("govfix2-test");
   const audit = new AuditEngine(sql, join(dir, "events"));
   const policy = new PolicyEngine(sql);
   const governance = new GovernanceStateEngine(sql, audit);
@@ -429,10 +431,15 @@ describe("FIX 4 — SSGM gates: honest enforced:false, not gating commit", () =>
   });
 
   it("ssgm enforced:false does NOT block commit (gates are advisory only)", async () => {
-    // The previous test's proposal will be in evaluating state.
-    // Create a fresh proposal and confirm commit proceeds despite enforced:false.
+    // The previous test left an evaluating proposal on resource:gf4.prompt, which
+    // the unique pending/evaluating index blocks a second proposal against — so use
+    // a fresh resource to confirm commit proceeds despite enforced:false.
+    engine.register(ENV, {
+      rid: "resource:gf4b.prompt", kind: "prompt", risk_class: "low",
+      evolution_policy: "auto", initial_content: "original",
+    });
     const prop = engine.propose(ENV, {
-      rid: "resource:gf4.prompt", candidate_content: "further improvement",
+      rid: "resource:gf4b.prompt", candidate_content: "further improvement",
       justification: "advisory-only ssgm commit test",
     });
     await engine.evaluate(ENV, prop.proposal_id);
@@ -933,6 +940,8 @@ describe("FIX 1 (gate) — approve() blocks persisted malformed eval_delta", () 
     const dir = mkdtempSync(join(tmpdir(), `eights-gf-ag-${tag}-`));
     const sql = new SqliteStore(join(dir, "state.db"));
     sql.migrate();
+    // propose() requires a registered actor (FIX 1a write-authz gate).
+    sql.db.prepare(`INSERT OR IGNORE INTO actors(actor_id, kind, created_at) VALUES (?, 'agent', datetime('now'))`).run("govfix2-test");
     const audit = new AuditEngine(sql, join(dir, "events"));
     const policy = new PolicyEngine(sql);
     const governance = new GovernanceStateEngine(sql, audit);

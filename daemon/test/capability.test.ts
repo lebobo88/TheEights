@@ -630,7 +630,10 @@ describe("enforcement — operator-only ops refuse without valid token + new gap
   });
 
   it("reject with valid token -> succeeds (Fix #3)", () => {
-    const prop = evolution.propose(baseEnv, { rid: "resource:cap.test.low", candidate_content: "reject-test-v2", justification: "reject cap test 2" });
+    // Fresh resource — a prior test leaves a pending proposal on cap.test.low,
+    // which the unique pending/evaluating index would collide with.
+    evolution.register(baseEnv, { rid: "resource:cap.test.reject-token", kind: "prompt", risk_class: "medium", evolution_policy: "hitl-only", initial_content: "rt-init" });
+    const prop = evolution.propose(baseEnv, { rid: "resource:cap.test.reject-token", candidate_content: "reject-test-v2", justification: "reject cap test 2" });
     const rejectEnv = mintEnv("evolution.reject", prop.proposal_id, prop.proposal_id);
     expect(() =>
       withKey(TEST_OP_KEY, TEST_KEY_ID, () =>
@@ -683,7 +686,9 @@ describe("enforcement — operator-only ops refuse without valid token + new gap
   });
 
   it("approve with valid token (correct binding, human actor, HITL row approved) -> commits", async () => {
-    const prop = evolution.propose(baseEnv, { rid: "resource:cap.test.medium", candidate_content: "v-approved-final", justification: "cap test approve" });
+    // Fresh resource — cap.test.medium carries a leftover pending proposal from an earlier test.
+    evolution.register(baseEnv, { rid: "resource:cap.test.approve-token", kind: "prompt", risk_class: "medium", evolution_policy: "hitl-only", initial_content: "at-init" });
+    const prop = evolution.propose(baseEnv, { rid: "resource:cap.test.approve-token", candidate_content: "v-approved-final", justification: "cap test approve" });
     await evolution.evaluate(baseEnv, prop.proposal_id);
     await evolution.commit(baseEnv, prop.proposal_id);
     const hitlRow = sql.db.prepare(
@@ -840,9 +845,11 @@ describe("enforcement — operator-only ops refuse without valid token + new gap
       `INSERT OR IGNORE INTO actors(actor_id, kind, created_at) VALUES (?, 'human', datetime('now'))`,
     ).run(OP_ACTOR);
 
+    // Fresh resource — cap.test.medium carries a leftover pending proposal from an earlier test.
+    evolution.register(baseEnv, { rid: "resource:cap.test.op-approve", kind: "prompt", risk_class: "medium", evolution_policy: "hitl-only", initial_content: "opa-init" });
     // Propose + evaluate + commit (creates a pending hitl.approve row).
     const prop = evolution.propose(baseEnv, {
-      rid: "resource:cap.test.medium", candidate_content: "e2e-operator-v", justification: "e2e op test",
+      rid: "resource:cap.test.op-approve", candidate_content: "e2e-operator-v", justification: "e2e op test",
     });
     await evolution.evaluate(baseEnv, prop.proposal_id);
     await evolution.commit(baseEnv, prop.proposal_id);
@@ -887,8 +894,10 @@ describe("enforcement — operator-only ops refuse without valid token + new gap
     sql.db.prepare(
       `INSERT OR IGNORE INTO actors(actor_id, kind, created_at) VALUES (?, 'human', datetime('now'))`,
     ).run(OP_ACTOR);
+    // Fresh resource — cap.test.low carries a leftover pending proposal from an earlier test.
+    evolution.register(baseEnv, { rid: "resource:cap.test.op-reject", kind: "prompt", risk_class: "medium", evolution_policy: "hitl-only", initial_content: "opr-init" });
     const prop = evolution.propose(baseEnv, {
-      rid: "resource:cap.test.low", candidate_content: "op-reject-test", justification: "operator reject e2e",
+      rid: "resource:cap.test.op-reject", candidate_content: "op-reject-test", justification: "operator reject e2e",
     });
     const rejectToken = withKey(TEST_OP_KEY, TEST_KEY_ID, () =>
       mintOperatorCapability({
@@ -977,9 +986,14 @@ describe("enforcement — operator-only ops refuse without valid token + new gap
       `INSERT OR IGNORE INTO actors(actor_id, kind, created_at) VALUES (?, 'human', datetime('now'))`,
     ).run(OP_ACTOR);
 
-    // Propose on a medium (hitl-only) resource.
+    // Propose on a fresh medium (hitl-only) resource — cap.test.medium carries a
+    // leftover pending proposal from an earlier test.
+    evolution.register(baseEnv, {
+      rid: "resource:cap.test.hitlonly-51", kind: "prompt", risk_class: "medium",
+      evolution_policy: "hitl-only", initial_content: "init-51",
+    });
     const prop = evolution.propose(baseEnv, {
-      rid: "resource:cap.test.medium",
+      rid: "resource:cap.test.hitlonly-51",
       candidate_content: "atlas-aligned-op-v",
       justification: "fix 5.1 atlas id alignment test",
     });

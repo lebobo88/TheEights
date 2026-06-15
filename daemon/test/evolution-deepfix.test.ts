@@ -37,6 +37,9 @@ function makeEngine(tag: string): { dir: string; sql: SqliteStore; engine: Evolu
   const dir = mkdtempSync(join(tmpdir(), `eights-df-${tag}-`));
   const sql = new SqliteStore(join(dir, "state.db"));
   sql.migrate();
+  // propose() requires a registered actor (FIX 1a write-authz gate).
+  sql.db.prepare(`INSERT OR IGNORE INTO actors(actor_id, kind, created_at) VALUES (?, 'agent', datetime('now'))`).run("deepfix-test");
+  sql.db.prepare(`INSERT OR IGNORE INTO actors(actor_id, kind, created_at) VALUES (?, 'human', datetime('now'))`).run("operator-rob");
   const audit = new AuditEngine(sql, join(dir, "events"));
   const policy = new PolicyEngine(sql);
   const governance = new GovernanceStateEngine(sql, audit);

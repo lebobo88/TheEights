@@ -28,6 +28,8 @@ describe("registration — source-anchored resources", () => {
     mkdirSync(srcDir, { recursive: true });
     sql = new SqliteStore(join(dir, "state.db"));
     sql.migrate();
+    // importFromSource → propose() requires a registered actor (FIX 1a write-authz gate).
+    sql.db.prepare(`INSERT OR IGNORE INTO actors(actor_id, kind, created_at) VALUES (?, 'agent', datetime('now'))`).run("registrar-test");
     const audit = new AuditEngine(sql, join(dir, "events"));
     const policy = new PolicyEngine(sql);
     engine = new EvolutionEngine(sql, join(dir, "resources"), policy, audit);
