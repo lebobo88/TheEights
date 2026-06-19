@@ -20,6 +20,8 @@ export interface PpFinalizeRunEvent {
 export interface PpRecordVerdictEvent {
   kind: "pp.record_verdict";
   run_id: string;
+  /** pp verdicts.id — the stable per-verdict idempotency anchor. */
+  verdict_id: string;
   stage_kind: string;
   rubric_id: string;
   outcome: "passed" | "failed" | "surfaced";
@@ -44,6 +46,7 @@ export class PpBridge {
           scopes: [`project:${event.project_id}`, "domain:code", `run:${event.run_id}`],
           provenance: { run_id: event.run_id, actor: "pp-bridge", source_uri: "pp://daemon" },
           confidence: 0.9,
+          idempotency_key: `pp:run:${event.run_id}`,
         });
         break;
       }
@@ -55,6 +58,7 @@ export class PpBridge {
           scopes: [`run:${event.run_id}`, `rubric:${event.rubric_id}`, `stage:${event.stage_kind}`, "domain:code"],
           provenance: { run_id: event.run_id, actor: "pp-bridge" },
           confidence: 0.8,
+          idempotency_key: `pp:verdict:${event.verdict_id}`,
         });
         break;
     }

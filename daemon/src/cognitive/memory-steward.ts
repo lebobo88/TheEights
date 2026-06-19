@@ -6,6 +6,7 @@
  * only creates supersede links.
  */
 import { nanoid } from "nanoid";
+import { statSync } from "node:fs";
 import type { Logger } from "pino";
 import type { SqliteStore } from "../stores/sqlite.js";
 import type { MemoryEngine } from "../engines/memory.js";
@@ -80,6 +81,41 @@ export class MemoryStewardJob {
       }
     }
     this.audit.record("memory.steward.tick", env, { scanned: rows.length, consolidated });
+    try { this.checkBloat(env); } catch (err) { this.log.warn({ err: String(err) }, "memory-steward bloat check failed"); }
     return { scanned: rows.length, consolidated };
+  }
+
+  /**
+   * Bloat tripwire. A re-ingesting adapter whose dedup/watermark regresses can
+   * balloon `memories` (the pp-watcher once grew it to ~1M duplicate rows / 3.5GB
+   * before this was caught by eye). Surface a loud, audited alert when the table,
+   * the db file, or the add-rate crosses an env-configurable threshold so a
+   * runaway is caught in hours, not weeks. Detection only — it never deletes.
+   */
+  private checkBloat(env: Envelope): void {
+    const rowsThresh = Number(process.env["EIGHTS_MEMORY_BLOAT_ROWS"] ?? 50_000);
+    const bytesThresh = Number(process.env["EIGHTS_DB_BLOAT_BYTES"] ?? 1_000_000_000);
+    const rateThresh = Number(process.env["EIGHTS_MEMORY_BLOAT_RATE_PER_HOUR"] ?? 5_000);
+
+    const total = (this.sql.db.prepare("SELECT COUNT(*) AS n FROM memories").get() as { n: number }).n;
+    const lastHour = (this.sql.db
+      .prepare("SELECT COUNT(*) AS n FROM memories WHERE created_at >= datetime('now','-1 hour')")
+      .get() as { n: number }).n;
+    let dbBytes = 0;
+    try { dbBytes = statSync(this.sql.path).size; } catch { /* file may be mid-checkpoint */ }
+
+    const breaches: string[] = [];
+    if (total > rowsThresh) breaches.push(`memories_rows=${total}>${rowsThresh}`);
+    if (dbBytes > bytesThresh) breaches.push(`db_bytes=${dbBytes}>${bytesThresh}`);
+    if (lastHour > rateThresh) breaches.push(`adds_last_hour=${lastHour}>${rateThresh}`);
+
+    if (breaches.length) {
+      this.log.error({ total, db_bytes: dbBytes, adds_last_hour: lastHour, breaches },
+        "MEMORY BLOAT TRIPWIRE — possible re-ingest runaway; inspect adapter watermarks");
+      this.audit.record("memory.bloat.tripwire", env,
+        { memories_rows: total, db_bytes: dbBytes, adds_last_hour: lastHour, breaches });
+    } else {
+      this.log.debug({ total, db_bytes: dbBytes, adds_last_hour: lastHour }, "memory-steward bloat check ok");
+    }
   }
 }

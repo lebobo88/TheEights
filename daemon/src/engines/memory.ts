@@ -30,6 +30,12 @@ export interface AddMemoryInput {
   expires_at?: string;
   handle?: string;
   cell?: string;
+  /**
+   * Stable dedup key for re-ingesting adapters (e.g. pp-watcher). When set, a
+   * second add with the same (tenant_id, idempotency_key) is a no-op that returns
+   * the existing memory instead of inserting a duplicate. See SqliteStore V8.
+   */
+  idempotency_key?: string;
 }
 
 export interface SearchMemoryInput {
@@ -64,11 +70,32 @@ export class MemoryEngine {
   ) {}
 
   async add(env: Envelope, input: AddMemoryInput): Promise<Memory> {
-    // SSGM Gate 3 (access)
+    // SSGM Gate 3 (access) — enforced FIRST, before the idempotency short-circuit
+    // below, so a caller can never retrieve an existing memory by guessing its
+    // idempotency_key without passing the access gate (authorization bypass).
     const access = this.policy.accessCheck(env, input.scopes ?? []);
     if (!access.ok) {
       this.audit.record("memory.add.rejected", env, { gate: "access", reason: access.reason });
       throw new MemoryRejection("access", access);
+    }
+    // Idempotency short-circuit (anti-bloat). A re-ingesting adapter (e.g. the
+    // pp-watcher) supplies a stable idempotency_key; if a memory with that key
+    // already exists, return it without re-embedding, re-inserting, or writing an
+    // audit event. This is the structural guard that prevents a watcher loop from
+    // ballooning `memories` with duplicates even if its watermark ever regresses.
+    if (input.idempotency_key) {
+      const existing = this._findByIdempotencyKey(env.tenant_id, input.idempotency_key);
+      if (existing) {
+        // Re-check access against the EXISTING memory's scopes (not the caller's
+        // claimed input scopes) so a guessed key + deliberately weak input scopes
+        // can't exfiltrate a memory written under stronger scopes.
+        const exAccess = this.policy.accessCheck(env, existing.scopes ?? []);
+        if (!exAccess.ok) {
+          this.audit.record("memory.add.rejected", env, { gate: "access", reason: exAccess.reason });
+          throw new MemoryRejection("access", exAccess);
+        }
+        return existing;
+      }
     }
     // SSGM Gate 1 (consistency)
     const consistency = this.policy.consistencyCheck(env, {
@@ -122,30 +149,51 @@ export class MemoryEngine {
       cell: (input.cell as Memory["cell"]) ?? null,
     };
 
-    this.sql.db
-      .prepare(
-        `INSERT INTO memories(
-          id, type, content, summary, embedding_id, graph_node_id,
-          provenance_json, scopes_json, tenant_id, project_id, domain,
-          created_at, expires_at, confidence, supersedes_json, superseded_by_json,
-          handle, cell
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      )
-      .run(
-        id, input.type, input.content, input.summary ?? null,
-        embedding_id ?? null, null,
-        JSON.stringify(input.provenance),
-        JSON.stringify(input.scopes ?? []),
-        env.tenant_id, env.project_id, env.domain,
-        now, input.expires_at ?? null,
-        mem.confidence,
-        JSON.stringify(input.supersedes ?? []),
-        "[]",
-        handle, input.cell ?? null,
-      );
+    try {
+      this.sql.db
+        .prepare(
+          `INSERT INTO memories(
+            id, type, content, summary, embedding_id, graph_node_id,
+            provenance_json, scopes_json, tenant_id, project_id, domain,
+            created_at, expires_at, confidence, supersedes_json, superseded_by_json,
+            handle, cell, idempotency_key
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        )
+        .run(
+          id, input.type, input.content, input.summary ?? null,
+          embedding_id ?? null, null,
+          JSON.stringify(input.provenance),
+          JSON.stringify(input.scopes ?? []),
+          env.tenant_id, env.project_id, env.domain,
+          now, input.expires_at ?? null,
+          mem.confidence,
+          JSON.stringify(input.supersedes ?? []),
+          "[]",
+          handle, input.cell ?? null, input.idempotency_key ?? null,
+        );
+    } catch (err) {
+      // Race: a concurrent daemon inserted the same idempotency_key between our
+      // pre-check and this INSERT. The V8 UNIQUE index rejects the duplicate;
+      // return the winner instead of throwing. Roll back the orphaned embedding.
+      if (input.idempotency_key && isUniqueViolation(err)) {
+        const winner = this._findByIdempotencyKey(env.tenant_id, input.idempotency_key);
+        // The losing side's embedding row is left orphaned (VectorStore is
+        // insert-only); a rare, tiny leak that the reclaim job can sweep.
+        if (winner) return winner;
+      }
+      throw err;
+    }
 
     this.audit.record("memory.add", env, { memory_id: id, type: input.type, handle, cell: input.cell ?? null, embedded: !!embedding_id });
     return mem;
+  }
+
+  /** Look up an existing memory by its dedup key within a tenant (V8). */
+  private _findByIdempotencyKey(tenant_id: string, key: string): Memory | null {
+    const row = this.sql.db
+      .prepare("SELECT * FROM memories WHERE tenant_id = ? AND idempotency_key = ? LIMIT 1")
+      .get(tenant_id, key) as Record<string, unknown> | undefined;
+    return row ? rowToMemory(row) : null;
   }
 
   /**
@@ -225,6 +273,13 @@ export class MemoryEngine {
     this.audit.record("memory.link", env, { edge_id: edgeId, ...input });
     return { edge_id: edgeId };
   }
+}
+
+/** True when an error is a SQLite UNIQUE-constraint violation (V8 dedup index). */
+function isUniqueViolation(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as NodeJS.ErrnoException & { code?: string }).code;
+  return code === "SQLITE_CONSTRAINT_UNIQUE" || err.message.includes("UNIQUE constraint failed");
 }
 
 function rowToMemory(row: Record<string, unknown>): Memory {

@@ -82,6 +82,33 @@ export class SqliteStore {
     this.applyV5();
     this.applyV6();
     this.applyV7();
+    this.applyV8();
+  }
+
+  /**
+   * V8 — memory write idempotency key (anti-bloat).
+   *
+   * Adapters that re-ingest the same upstream event (e.g. the pp-watcher syncing
+   * finalized pair-programmer runs every 5s) must not create a fresh memory row
+   * on each pass. A nullable `idempotency_key` + a UNIQUE partial index on
+   * (tenant_id, idempotency_key) makes `memory.add` an upsert-by-key no-op when a
+   * memory with that key already exists — the structural defense against a
+   * watcher re-ingest flood (which had grown `memories` to ~1M duplicate rows).
+   *
+   * Nullable + partial (WHERE idempotency_key IS NOT NULL) so legacy rows and
+   * ad-hoc memories without a key are unaffected and never collide.
+   */
+  private applyV8(): void {
+    const memCols = this.db.prepare(`PRAGMA table_info(memories)`).all() as Array<{ name: string }>;
+    if (!memCols.some((c) => c.name === "idempotency_key")) {
+      this.db.exec(`ALTER TABLE memories ADD COLUMN idempotency_key TEXT`);
+    }
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_idempotency
+        ON memories(tenant_id, idempotency_key)
+        WHERE idempotency_key IS NOT NULL;
+      INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (8, datetime('now'));
+    `);
   }
 
   /**
