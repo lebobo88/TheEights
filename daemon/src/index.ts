@@ -74,6 +74,8 @@ import { registerSquadTools } from "./mcp/squad.js";
 import { registerCellTools } from "./mcp/cells.js";
 import { registerPromptTools } from "./mcp/prompt.js";
 import { startMcpServer, type ToolMap } from "./mcp/server.js";
+import { startTransportThenScheduleBoot } from "./boot-sequencing.js";
+import { LazyEmbedder, LazyCompleter } from "./providers/lazy.js";
 import type { Envelope } from "./schemas/envelope.js";
 
 /**
@@ -146,15 +148,9 @@ async function main(): Promise<void> {
   log.info({ cfg, pid: process.pid }, "eights-daemon booting");
 
   const sql = new SqliteStore(cfg.statePath);
-  sql.migrate();
   const vec = new VectorStore(sql.db, cfg.embeddingDim);
-  vec.load();
 
   const graph = new GraphStore(cfg.graphPath, cfg.graphDriver === "stub" ? "ladybug" : cfg.graphDriver);
-  if (cfg.graphDriver !== "stub") {
-    try { await graph.open(); await graph.ensureSchema(); log.info({ driver: cfg.graphDriver }, "graph store opened"); }
-    catch (err) { log.warn({ err: String(err) }, "graph store unavailable — degraded mode"); }
-  }
 
   const audit = new AuditEngine(sql, cfg.eventsDir);
 
@@ -187,42 +183,12 @@ async function main(): Promise<void> {
   // evolution.evaluate): tight, no-retry budget. Background = miner: tolerant.
   const inlineLlmBudget = inlineBudget(providerCfg);
   const bgLlmBudget = backgroundBudget(providerCfg);
-  const embedder = await createEmbedder(providerCfg);
-  const completer = await createCompleter(providerCfg);
-  if (embedder.dim() !== cfg.embeddingDim) {
-    throw new Error(
-      `Embedder reports dim=${embedder.dim()} but EIGHTS_EMBEDDING_DIM=${cfg.embeddingDim}. ` +
-      `Set EIGHTS_EMBEDDING_DIM=${embedder.dim()} or choose a model that matches.`,
-    );
-  }
-  const embedAvail = await embedder.available();
+  const embedder = new LazyEmbedder(cfg.embeddingDim, () => createEmbedder(providerCfg));
   const llmEnabled = providerCfg.llmEnabled;
-  const llmAvail = await completer.available();
-  log.info({
-    embedProvider: providerCfg.embedProvider,
-    llmProvider: providerCfg.llmProvider,
-    embedAvail, llmEnabled, llmAvail,
-  }, "LLM stack probed");
+  const completer = new LazyCompleter(() => createCompleter(providerCfg));
 
   const memory = new MemoryEngine(sql, vec, graph, audit, embedder, policy);
   const identity = new IdentityEngine(sql);
-  identity.registerActor("eights.system", "system");
-
-  // Register (or promote) the operator actor as kind='human' so capability token
-  // checks pass. EIGHTS_OPERATOR_ACTOR_ID defaults to "eights.operator".
-  // UPSERT — not INSERT OR IGNORE — so a pre-existing row with kind != 'human'
-  // (e.g. 'agent' seeded by an older daemon version) is corrected to 'human'.
-  // Without the DO UPDATE a pre-existing non-human row would remain and brick
-  // every operator capability check.
-  const operatorActorId = process.env["EIGHTS_OPERATOR_ACTOR_ID"] ?? "eights.operator";
-  sql.db.prepare(
-    `INSERT INTO actors(actor_id, kind, created_at) VALUES (?, 'human', datetime('now'))
-     ON CONFLICT(actor_id) DO UPDATE SET kind = 'human'`,
-  ).run(operatorActorId);
-
-  for (const p of ["TheEights", "pair-programmer", "Hydra", "ExecutiveSuite", "xenia"]) {
-    identity.registerProject(p, "infra", ["public"]);
-  }
 
   const evolution = new EvolutionEngine(sql, cfg.resourcesDir, policy, audit);
 
@@ -257,11 +223,7 @@ async function main(): Promise<void> {
   evalRegistry.register(new NoopEval());
   evolution.setEvaluator(evalRegistry);
 
-  evolution.seedCriticalResources();
-  seedEvalRubrics(evolution);
-
   const constitution = new ConstitutionEngine(evolution, audit);
-  seedConstitutions(constitution, log);
 
   const hydraEngine = new HydraEngine(sql, audit, memory);
   const governance = new GovernanceStateEngine(sql, audit);
@@ -280,11 +242,6 @@ async function main(): Promise<void> {
   otel.attach(audit);
 
   const promptRegistrar = new PromptRegistrar(evolution, log);
-  promptRegistrar.run({
-    tenant_id: "local", actor_id: "eights.system",
-    project_id: "TheEights", domain: "infra",
-    scope: [], trace_id: "seed-prompts",
-  });
 
   const stewardJob = new MemoryStewardJob(sql, memory, audit, log);
   const costJob = new CostAnalystJob(sql, memory, audit, log);
@@ -339,6 +296,92 @@ async function main(): Promise<void> {
     xeniaWatcher.start();
     miner.startScheduled();
     auditVerifier.start();
+  };
+
+  const warmProviders = (): void => {
+    void (async () => {
+      const [embedAvail, llmAvail] = await Promise.all([
+        embedder.warm(),
+        completer.warm(),
+      ]);
+      log.info({
+        embedProvider: providerCfg.embedProvider,
+        llmProvider: providerCfg.llmProvider,
+        embedAvail,
+        llmEnabled,
+        llmAvail,
+      }, "LLM stack probed");
+    })().catch((err: unknown) => {
+      log.warn({ err: String(err) }, "LLM stack probe failed");
+    });
+  };
+
+  const bootstrapAuditedRuntime = async (): Promise<void> => {
+    sql.migrate();
+    vec.load();
+
+    if (cfg.graphDriver !== "stub") {
+      try {
+        await graph.open();
+        await graph.ensureSchema();
+        log.info({ driver: cfg.graphDriver }, "graph store opened");
+      } catch (err) {
+        log.warn({ err: String(err) }, "graph store unavailable — degraded mode");
+      }
+    }
+
+    identity.registerActor("eights.system", "system");
+
+    // Register (or promote) the operator actor as kind='human' so capability token
+    // checks pass. EIGHTS_OPERATOR_ACTOR_ID defaults to "eights.operator".
+    // UPSERT — not INSERT OR IGNORE — so a pre-existing row with kind != 'human'
+    // (e.g. 'agent' seeded by an older daemon version) is corrected to 'human'.
+    // Without the DO UPDATE a pre-existing non-human row would remain and brick
+    // every operator capability check.
+    const operatorActorId = process.env["EIGHTS_OPERATOR_ACTOR_ID"] ?? "eights.operator";
+    sql.db.prepare(
+      `INSERT INTO actors(actor_id, kind, created_at) VALUES (?, 'human', datetime('now'))
+       ON CONFLICT(actor_id) DO UPDATE SET kind = 'human'`,
+    ).run(operatorActorId);
+
+    for (const p of ["TheEights", "pair-programmer", "Hydra", "ExecutiveSuite", "xenia"]) {
+      identity.registerProject(p, "infra", ["public"]);
+    }
+
+    evolution.seedCriticalResources();
+    seedEvalRubrics(evolution);
+    seedConstitutions(constitution, log);
+    promptRegistrar.run({
+      tenant_id: "local", actor_id: "eights.system",
+      project_id: "TheEights", domain: "infra",
+      scope: [], trace_id: "seed-prompts",
+    });
+
+    // Verify the chain off the connect critical path, then open the gate and
+    // start the audited background producers. Tools stay fail-closed until this
+    // resolves successfully (or the operator override is set).
+    const result = await audit.verifyChain();
+    if (result.ok) {
+      auditGate.pass();
+      log.info("audit chain verified");
+      startBackgroundWork();
+    } else if (process.env.EIGHTS_SKIP_AUDIT_CHECK === "1") {
+      auditGate.pass();
+      process.stderr.write(
+        `[eights-daemon] EIGHTS_SKIP_AUDIT_CHECK=1 set — continuing despite broken chain\n`,
+      );
+      log.warn({ broken_at: result.broken_at }, "audit chain check skipped per EIGHTS_SKIP_AUDIT_CHECK=1");
+      startBackgroundWork();
+    } else {
+      // Fail-closed: transport stays up for diagnostics, but every tool is
+      // refused and no audited background producer starts.
+      auditGate.fail(`AUDIT CHAIN BROKEN at ${result.broken_at}`);
+      log.error({ broken_at: result.broken_at }, "AUDIT CHAIN BROKEN — tools fail-closed");
+      process.stderr.write(
+        `[eights-daemon] AUDIT CHAIN BROKEN at row ${result.broken_at}. ` +
+        `Tools are refused. Set EIGHTS_SKIP_AUDIT_CHECK=1 in .mcp.json env to boot anyway.\n`,
+      );
+    }
   };
 
   const tools: ToolMap = {
@@ -412,15 +455,25 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
   // Transport up FIRST — answers the gateway's initialize handshake in <1s.
-  await startMcpServer(tools, {
-    name: "eights-daemon",
-    version: "0.3.0",
-    ready: () => ({ ok: auditReady, reason: auditReason }),
-    log,
-    // Fire before the Hydra gateway's ~120s per-call timeout so an opaque
-    // gateway timeout becomes a fast, attributable "tool_deadline_exceeded".
-    deadlineMs: Number(process.env.EIGHTS_TOOL_DEADLINE_MS ?? 90_000),
-    slowWarnMs: Number(process.env.EIGHTS_TOOL_SLOW_WARN_MS ?? 2_000),
+  await startTransportThenScheduleBoot({
+    startTransport: () => startMcpServer(tools, {
+      name: "eights-daemon",
+      version: "0.3.0",
+      ready: () => ({ ok: auditReady, reason: auditReason }),
+      log,
+      // Fire before the Hydra gateway's ~120s per-call timeout so an opaque
+      // gateway timeout becomes a fast, attributable "tool_deadline_exceeded".
+      deadlineMs: Number(process.env.EIGHTS_TOOL_DEADLINE_MS ?? 90_000),
+      slowWarnMs: Number(process.env.EIGHTS_TOOL_SLOW_WARN_MS ?? 2_000),
+    }),
+    warmProviders,
+    bootstrap: bootstrapAuditedRuntime,
+    onBootstrapError: (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      auditGate.fail(`daemon bootstrap failed: ${message}`);
+      log.error({ err: message }, "daemon bootstrap failed — tools remain fail-closed");
+      process.stderr.write(`[eights-daemon] bootstrap failed: ${message}. Tools are refused.\n`);
+    },
   });
   log.info("eights-daemon stdio MCP transport active");
 
@@ -433,33 +486,6 @@ async function main(): Promise<void> {
     memGaugeTimer = setInterval(runMemGauge, MEM_GAUGE_INTERVAL_MS);
     memGaugeTimer.unref?.();
   }
-
-  // Verify the chain off the critical path, then open the gate and start the
-  // audited background producers. Tools are refused until this resolves.
-  void (async () => {
-    const result = await audit.verifyChain();
-    if (result.ok) {
-      auditGate.pass();
-      log.info("audit chain verified");
-      startBackgroundWork();
-    } else if (process.env.EIGHTS_SKIP_AUDIT_CHECK === "1") {
-      auditGate.pass();
-      process.stderr.write(
-        `[eights-daemon] EIGHTS_SKIP_AUDIT_CHECK=1 set — continuing despite broken chain\n`,
-      );
-      log.warn({ broken_at: result.broken_at }, "audit chain check skipped per EIGHTS_SKIP_AUDIT_CHECK=1");
-      startBackgroundWork();
-    } else {
-      // Fail-closed: transport stays up for diagnostics, but every tool is
-      // refused and no audited background producer starts.
-      auditGate.fail(`AUDIT CHAIN BROKEN at ${result.broken_at}`);
-      log.error({ broken_at: result.broken_at }, "AUDIT CHAIN BROKEN — tools fail-closed");
-      process.stderr.write(
-        `[eights-daemon] AUDIT CHAIN BROKEN at row ${result.broken_at}. ` +
-        `Tools are refused. Set EIGHTS_SKIP_AUDIT_CHECK=1 in .mcp.json env to boot anyway.\n`,
-      );
-    }
-  })();
 }
 
 /** Seed per-kind judge rubrics as frozen critical resources (ADR-0008, invariant #7). */
