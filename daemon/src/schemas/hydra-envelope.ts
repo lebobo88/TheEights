@@ -25,6 +25,7 @@ export const CAMEL_TO_UPPER_SNAKE: Readonly<Record<string, string>> = {
   HITLRequest: "HITL_REQUEST",
   DecisionRecord: "DECISION_RECORD",
   Handoff: "HANDOFF",
+  CSuiteDecisionPacket: "C_SUITE_DECISION_PACKET",
 };
 
 /**

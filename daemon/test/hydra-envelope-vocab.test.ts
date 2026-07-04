@@ -7,7 +7,11 @@
  *      a deprecation warning to stderr).
  *   3. Truly unknown types are rejected by Zod.
  *   4. V9 migration is idempotent and correctly converts CamelCase rows in a
- *      fixture database that pre-dates the Phase 3b change.
+ *      fixture database that pre-dates the Phase 3b change — including both the
+ *      type COLUMN and the embedded "type" field inside payload_json.
+ *   5. CAMEL_TO_UPPER_SNAKE has exactly 9 entries and covers the full legacy set
+ *      (including CSuiteDecisionPacket which pair-programmer has historically emitted).
+ *   6. QueryArgs.type normalises CamelCase values at the schema seam.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -21,6 +25,7 @@ import {
   normalizeHydraEnvelopeType,
 } from "../src/schemas/hydra-envelope.js";
 import { SqliteStore } from "../src/stores/sqlite.js";
+import { QueryArgs } from "../src/mcp/hydra.js";
 
 // ---------------------------------------------------------------------------
 // 1. Exact enum membership
@@ -120,7 +125,7 @@ describe("normalizeHydraEnvelopeType — CamelCase migration shim", () => {
     }
   });
 
-  it("all 8 legacy CamelCase values parse through HydraEnvelope.safeParse successfully", () => {
+  it("all 9 legacy CamelCase values parse through HydraEnvelope.safeParse successfully", () => {
     for (const [camel, upper] of Object.entries(CAMEL_TO_UPPER_SNAKE)) {
       const result = HydraEnvelope.safeParse({
         id: `env-${camel}`,
@@ -133,6 +138,105 @@ describe("normalizeHydraEnvelopeType — CamelCase migration shim", () => {
       if (result.success) {
         expect(result.data.type).toBe(upper);
       }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2b. CAMEL_TO_UPPER_SNAKE completeness — exactly 9 entries, full legacy set
+// ---------------------------------------------------------------------------
+
+describe("CAMEL_TO_UPPER_SNAKE — legacy map completeness", () => {
+  it("has exactly 9 entries", () => {
+    expect(Object.keys(CAMEL_TO_UPPER_SNAKE)).toHaveLength(9);
+  });
+
+  it("mapped values are a subset of the canonical UPPER_SNAKE enum (set-equality against non-aliased members)", () => {
+    // PRD and COCKPIT_WRITE have no legacy CamelCase alias; every other canonical
+    // value MUST have an alias so legacy clients can be migrated.
+    const noAlias = new Set(["PRD", "COCKPIT_WRITE"]);
+    const mappedValues = new Set(Object.values(CAMEL_TO_UPPER_SNAKE));
+    const expectedAliased = new Set(
+      HydraEnvelopeType.options.filter((v) => !noAlias.has(v)),
+    );
+    expect(mappedValues).toEqual(expectedAliased);
+  });
+
+  it("includes CSuiteDecisionPacket → C_SUITE_DECISION_PACKET (pair-programmer legacy form)", () => {
+    expect(CAMEL_TO_UPPER_SNAKE["CSuiteDecisionPacket"]).toBe("C_SUITE_DECISION_PACKET");
+  });
+
+  it("CSuiteDecisionPacket normalises through normalizeHydraEnvelopeType", () => {
+    expect(normalizeHydraEnvelopeType("CSuiteDecisionPacket")).toBe("C_SUITE_DECISION_PACKET");
+  });
+
+  it("CSuiteDecisionPacket parses through HydraEnvelope with correct canonical type", () => {
+    const result = HydraEnvelope.safeParse({
+      id: "env-csuite",
+      type: "CSuiteDecisionPacket",
+      origin_squad: "executive",
+      workflow_id: "wf-csuite",
+      context_refs: [],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.type).toBe("C_SUITE_DECISION_PACKET");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2c. QueryArgs.type — CamelCase normalization at the query intake seam
+// ---------------------------------------------------------------------------
+
+describe("QueryArgs.type — legacy CamelCase normalization at query seam", () => {
+  const BASE_ENVELOPE = {
+    tenant_id: "local",
+    actor_id: "test-actor",
+    project_id: "TheEights",
+    domain: "test",
+    trace_id: "trace-vocab-test",
+    scope: [],
+  };
+
+  it("normalises a legacy CamelCase type param to UPPER_SNAKE", () => {
+    const result = QueryArgs.safeParse({
+      envelope: BASE_ENVELOPE,
+      type: "DevTask",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.type).toBe("DEV_TASK");
+    }
+  });
+
+  it("passes through an already-canonical UPPER_SNAKE type unchanged", () => {
+    const result = QueryArgs.safeParse({
+      envelope: BASE_ENVELOPE,
+      type: "ARCH_RFC",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.type).toBe("ARCH_RFC");
+    }
+  });
+
+  it("normalises CSuiteDecisionPacket to C_SUITE_DECISION_PACKET at query seam", () => {
+    const result = QueryArgs.safeParse({
+      envelope: BASE_ENVELOPE,
+      type: "CSuiteDecisionPacket",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.type).toBe("C_SUITE_DECISION_PACKET");
+    }
+  });
+
+  it("passes through undefined type (optional field) unchanged", () => {
+    const result = QueryArgs.safeParse({ envelope: BASE_ENVELOPE });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.type).toBeUndefined();
     }
   });
 });
@@ -194,7 +298,11 @@ describe("SqliteStore V9 migration — UPPER_SNAKE normalization", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  /** Seed the hydra_envelopes table with one CamelCase row per legacy type. */
+  /**
+   * Seed the hydra_envelopes table with one CamelCase row per legacy type.
+   * The payload_json body ALSO contains the CamelCase "type" field to exercise
+   * the V9 body-rewrite path (finding 1).
+   */
   function seedCamelCaseRows(): void {
     for (const [camel] of Object.entries(CAMEL_TO_UPPER_SNAKE)) {
       sql.db.prepare(
@@ -204,12 +312,14 @@ describe("SqliteStore V9 migration — UPPER_SNAKE normalization", () => {
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       ).run(
         `eid-${camel}`, "wf-fixture", camel, "engineering", null,
-        "{}", "[]", "local", "TheEights", new Date().toISOString(), null,
+        // payload_json embeds the same CamelCase type so V9 body-rewrite can be asserted.
+        JSON.stringify({ type: camel, workflow_id: "wf-fixture", id: `eid-${camel}` }),
+        "[]", "local", "TheEights", new Date().toISOString(), null,
       );
     }
   }
 
-  it("V9 migration converts all 8 CamelCase rows to UPPER_SNAKE", () => {
+  it("V9 migration converts all 9 CamelCase rows to UPPER_SNAKE", () => {
     // Migrate up to V8 manually by calling migrate() — V9 runs inside too.
     sql.migrate();
     // Seed AFTER migrate to simulate pre-V9 data then re-run migration.
@@ -240,13 +350,75 @@ describe("SqliteStore V9 migration — UPPER_SNAKE normalization", () => {
     // Re-run V9 by calling migrate() again (V9 guard is gone).
     sql.migrate();
 
-    // All rows must now have UPPER_SNAKE types.
-    const postRows = sql.db.prepare(`SELECT type FROM hydra_envelopes`).all() as Array<{ type: string }>;
+    // All rows must now have UPPER_SNAKE types in BOTH the type column AND payload_json body.
+    const postRows = sql.db.prepare(
+      `SELECT type, payload_json FROM hydra_envelopes`,
+    ).all() as Array<{ type: string; payload_json: string }>;
     expect(postRows).toHaveLength(Object.keys(CAMEL_TO_UPPER_SNAKE).length);
     const upperSnakeValues = new Set(Object.values(CAMEL_TO_UPPER_SNAKE));
     for (const row of postRows) {
-      expect(upperSnakeValues.has(row.type), `"${row.type}" should be UPPER_SNAKE after V9`).toBe(true);
+      // type column normalised
+      expect(upperSnakeValues.has(row.type), `type column "${row.type}" should be UPPER_SNAKE after V9`).toBe(true);
+      // payload_json body normalised
+      const body = JSON.parse(row.payload_json) as Record<string, unknown>;
+      expect(
+        upperSnakeValues.has(body["type"] as string),
+        `payload_json.type "${String(body["type"])}" should be UPPER_SNAKE after V9`,
+      ).toBe(true);
+      // column and body agree
+      expect(body["type"]).toBe(row.type);
     }
+  });
+
+  it("V9 migration normalises payload_json body even when type column was already UPPER_SNAKE (idempotent on body)", () => {
+    // Fresh DB: simulate a row where type column was already migrated but
+    // payload_json was written by a legacy client with CamelCase.
+    sql.migrate();
+    sql.db.prepare(`DELETE FROM schema_version WHERE version = 9`).run();
+    // Insert a row: type column already UPPER_SNAKE, but payload_json still has CamelCase.
+    sql.db.prepare(
+      `INSERT INTO hydra_envelopes(
+        envelope_id, workflow_id, type, origin_squad, target_squad,
+        payload_json, context_refs_json, tenant_id, project_id, recorded_at, memory_id
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      "eid-mixed", "wf-mixed", "DEV_TASK", "engineering", null,
+      JSON.stringify({ type: "DevTask", workflow_id: "wf-mixed" }),
+      "[]", "local", "TheEights", new Date().toISOString(), null,
+    );
+    // Re-run V9.
+    sql.migrate();
+    const row = sql.db.prepare(
+      `SELECT type, payload_json FROM hydra_envelopes WHERE envelope_id = 'eid-mixed'`,
+    ).get() as { type: string; payload_json: string };
+    expect(row.type).toBe("DEV_TASK");
+    const body = JSON.parse(row.payload_json) as Record<string, unknown>;
+    expect(body["type"]).toBe("DEV_TASK");
+  });
+
+  it("V9 migration skips unparseable payload_json rows (fail-soft)", () => {
+    sql.migrate();
+    sql.db.prepare(`DELETE FROM schema_version WHERE version = 9`).run();
+    // Insert a row with invalid JSON in payload_json.
+    sql.db.prepare(
+      `INSERT INTO hydra_envelopes(
+        envelope_id, workflow_id, type, origin_squad, target_squad,
+        payload_json, context_refs_json, tenant_id, project_id, recorded_at, memory_id
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      "eid-broken", "wf-broken", "DevTask", "engineering", null,
+      "NOT_VALID_JSON",
+      "[]", "local", "TheEights", new Date().toISOString(), null,
+    );
+    // V9 must complete without throwing even though payload_json is invalid.
+    expect(() => sql.migrate()).not.toThrow();
+    // The type column is still normalised (sql exec runs unconditionally on the column).
+    const row = sql.db.prepare(
+      `SELECT type, payload_json FROM hydra_envelopes WHERE envelope_id = 'eid-broken'`,
+    ).get() as { type: string; payload_json: string };
+    expect(row.type).toBe("DEV_TASK");
+    // payload_json is left as-is (json_valid guard skipped it).
+    expect(row.payload_json).toBe("NOT_VALID_JSON");
   });
 
   it("V9 migration is idempotent — running migrate() twice yields the same result", () => {

@@ -117,15 +117,51 @@ export class SqliteStore {
     const v9Row = this.db.prepare(`SELECT version FROM schema_version WHERE version = 9`).get();
     if (v9Row) return;
 
+    // Step 1: Normalize the `type` COLUMN for all 9 known legacy CamelCase values.
     this.db.exec(`
-      UPDATE hydra_envelopes SET type = 'ARCH_RFC'        WHERE type = 'ArchRFC';
-      UPDATE hydra_envelopes SET type = 'DEV_TASK'        WHERE type = 'DevTask';
-      UPDATE hydra_envelopes SET type = 'CREATIVE_BRIEF'  WHERE type = 'CreativeBrief';
-      UPDATE hydra_envelopes SET type = 'SHOT_LIST'       WHERE type = 'ShotList';
-      UPDATE hydra_envelopes SET type = 'ASSET_JOB'       WHERE type = 'AssetJob';
-      UPDATE hydra_envelopes SET type = 'HITL_REQUEST'    WHERE type = 'HITLRequest';
-      UPDATE hydra_envelopes SET type = 'DECISION_RECORD' WHERE type = 'DecisionRecord';
-      UPDATE hydra_envelopes SET type = 'HANDOFF'         WHERE type = 'Handoff';
+      UPDATE hydra_envelopes SET type = 'ARCH_RFC'                WHERE type = 'ArchRFC';
+      UPDATE hydra_envelopes SET type = 'DEV_TASK'                WHERE type = 'DevTask';
+      UPDATE hydra_envelopes SET type = 'CREATIVE_BRIEF'          WHERE type = 'CreativeBrief';
+      UPDATE hydra_envelopes SET type = 'SHOT_LIST'               WHERE type = 'ShotList';
+      UPDATE hydra_envelopes SET type = 'ASSET_JOB'               WHERE type = 'AssetJob';
+      UPDATE hydra_envelopes SET type = 'HITL_REQUEST'            WHERE type = 'HITLRequest';
+      UPDATE hydra_envelopes SET type = 'DECISION_RECORD'         WHERE type = 'DecisionRecord';
+      UPDATE hydra_envelopes SET type = 'HANDOFF'                 WHERE type = 'Handoff';
+      UPDATE hydra_envelopes SET type = 'C_SUITE_DECISION_PACKET' WHERE type = 'CSuiteDecisionPacket';
+    `);
+
+    // Step 2: Normalize the embedded "type" field inside payload_json.
+    // json_valid() guard ensures malformed / non-JSON rows are silently skipped
+    // (fail-soft). json_set + json_extract are standard SQLite JSON1 functions
+    // available in any SQLite >= 3.38 (bundled with Node 20+).
+    this.db.exec(`
+      UPDATE hydra_envelopes
+        SET payload_json = json_set(payload_json, '$.type', 'ARCH_RFC')
+        WHERE json_valid(payload_json) AND json_extract(payload_json, '$.type') = 'ArchRFC';
+      UPDATE hydra_envelopes
+        SET payload_json = json_set(payload_json, '$.type', 'DEV_TASK')
+        WHERE json_valid(payload_json) AND json_extract(payload_json, '$.type') = 'DevTask';
+      UPDATE hydra_envelopes
+        SET payload_json = json_set(payload_json, '$.type', 'CREATIVE_BRIEF')
+        WHERE json_valid(payload_json) AND json_extract(payload_json, '$.type') = 'CreativeBrief';
+      UPDATE hydra_envelopes
+        SET payload_json = json_set(payload_json, '$.type', 'SHOT_LIST')
+        WHERE json_valid(payload_json) AND json_extract(payload_json, '$.type') = 'ShotList';
+      UPDATE hydra_envelopes
+        SET payload_json = json_set(payload_json, '$.type', 'ASSET_JOB')
+        WHERE json_valid(payload_json) AND json_extract(payload_json, '$.type') = 'AssetJob';
+      UPDATE hydra_envelopes
+        SET payload_json = json_set(payload_json, '$.type', 'HITL_REQUEST')
+        WHERE json_valid(payload_json) AND json_extract(payload_json, '$.type') = 'HITLRequest';
+      UPDATE hydra_envelopes
+        SET payload_json = json_set(payload_json, '$.type', 'DECISION_RECORD')
+        WHERE json_valid(payload_json) AND json_extract(payload_json, '$.type') = 'DecisionRecord';
+      UPDATE hydra_envelopes
+        SET payload_json = json_set(payload_json, '$.type', 'HANDOFF')
+        WHERE json_valid(payload_json) AND json_extract(payload_json, '$.type') = 'Handoff';
+      UPDATE hydra_envelopes
+        SET payload_json = json_set(payload_json, '$.type', 'C_SUITE_DECISION_PACKET')
+        WHERE json_valid(payload_json) AND json_extract(payload_json, '$.type') = 'CSuiteDecisionPacket';
       INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (9, datetime('now'));
     `);
   }
