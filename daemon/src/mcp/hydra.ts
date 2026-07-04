@@ -26,7 +26,7 @@ export const HandoffArgs = z.object({
 export function registerHydraTools(engine: HydraEngine) {
   return {
     "eights.hydra.envelope.record": {
-      description: "Durable, audited, semantically-indexed record of a HydraEnvelope (CSuiteDecisionPacket | PRD | ArchRFC | DevTask | CreativeBrief | ShotList | AssetJob | DecisionRecord | HITLRequest | Handoff).",
+      description: "Durable, audited, semantically-indexed record of a HydraEnvelope (C_SUITE_DECISION_PACKET | PRD | ARCH_RFC | DEV_TASK | CREATIVE_BRIEF | SHOT_LIST | ASSET_JOB | HITL_REQUEST | DECISION_RECORD | HANDOFF | COCKPIT_WRITE). Legacy CamelCase types are accepted with a deprecation warning (Phase 3b migration window).",
       schema: RecordArgs,
       handler: async (a: z.infer<typeof RecordArgs>) => engine.record(a.envelope, a.hydra_envelope),
     },
@@ -40,7 +40,7 @@ export function registerHydraTools(engine: HydraEngine) {
       }),
     },
     "eights.hydra.handoff.list": {
-      description: "Every cross-squad Handoff in a workflow, oldest first.",
+      description: "Every cross-squad HANDOFF envelope in a workflow, oldest first.",
       schema: HandoffArgs,
       handler: async (a: z.infer<typeof HandoffArgs>) => engine.listHandoffs(a.envelope, a.workflow_id),
     },

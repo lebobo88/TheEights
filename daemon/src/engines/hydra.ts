@@ -124,7 +124,7 @@ export class HydraEngine {
     const rows = this.sql.db.prepare(
       `SELECT envelope_id, type, origin_squad, target_squad, recorded_at, payload_json
        FROM hydra_envelopes
-       WHERE tenant_id = ? AND workflow_id = ? AND type = 'Handoff'
+       WHERE tenant_id = ? AND workflow_id = ? AND type = 'HANDOFF'
        ORDER BY recorded_at ASC`,
     ).all(env.tenant_id, workflow_id) as Array<{ envelope_id: string; type: string; origin_squad: string; target_squad: string | null; recorded_at: string; payload_json: string }>;
     return rows.map((r) => ({
