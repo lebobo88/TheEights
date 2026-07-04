@@ -6,7 +6,7 @@
  * Policy format (YAML in the resource body):
  *   target_squad: <slug>
  *   strip_scopes:        [secret, pii, financial]
- *   block_envelope_types: [HITLRequest]   # optional — bounce these instead of forwarding
+ *   block_envelope_types: [HITL_REQUEST]   # optional — bounce these instead of forwarding
  *   keep_summary_only:   true             # if true, replace content with summary
  *
  * If no policy is registered for the target squad, the default `creative`

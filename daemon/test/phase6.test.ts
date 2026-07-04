@@ -146,7 +146,7 @@ describe("Phase 6 — manifesto alignment", () => {
 
   it("hydra envelope record + query + handoff list", async () => {
     const r = await hydra.record(env, {
-      id: "env_test_1", type: "DevTask",
+      id: "env_test_1", type: "DEV_TASK",
       origin_squad: "engineering", target_squad: "creative",
       workflow_id: "wf_1", context_refs: [],
       // @ts-expect-error passthrough extra field
@@ -156,7 +156,7 @@ describe("Phase 6 — manifesto alignment", () => {
     const q = hydra.query(env, { workflow_id: "wf_1" });
     expect(q.find((e) => e.envelope_id === r.envelope_id)).toBeDefined();
     await hydra.record(env, {
-      id: "env_test_handoff_1", type: "Handoff",
+      id: "env_test_handoff_1", type: "HANDOFF",
       origin_squad: "engineering", target_squad: "creative",
       workflow_id: "wf_1", context_refs: [],
     } as never);
@@ -243,7 +243,7 @@ describe("Phase 6 — manifesto alignment", () => {
 
   it("redact_for_squad strips scoped fields and runs PII patterns", () => {
     const r = redaction.redactForSquad(env, "creative", {
-      type: "DevTask",
+      type: "DEV_TASK",
       context_refs: [
         { tier: "semantic", key: "X", summary: "fine", scopes: ["public"] },
         { tier: "semantic", key: "Y", summary: "salary 100k", scopes: ["financial"] },
