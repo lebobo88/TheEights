@@ -5,6 +5,12 @@ import { spawn } from "node:child_process";
 import { unlinkSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Resolve the daemon relative to this probe (daemon/test -> daemon/dist), so it
+// works on any clone. Env override mirrors the real CLI/registration contract.
+const DAEMON_JS = process.env.EIGHTS_DAEMON_JS
+  ?? fileURLToPath(new URL("../dist/index.js", import.meta.url));
 
 const pidPath = join(homedir(), ".eights", "eights.pid");
 if (existsSync(pidPath)) {
@@ -14,7 +20,7 @@ if (existsSync(pidPath)) {
 const t0 = Date.now();
 const child = spawn(
   "node",
-  ["C:/AiAppDeployments/TheEights/daemon/dist/index.js"],
+  [DAEMON_JS],
   {
     env: { ...process.env, EIGHTS_LOG_LEVEL: "info" },
     stdio: ["pipe", "pipe", "pipe"],

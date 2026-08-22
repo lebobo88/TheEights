@@ -2,14 +2,17 @@ import { readdirSync, existsSync } from "node:fs";
 import type { Consumer } from "../../schemas/resource.js";
 import { pathContains, type WriteBridge, type WriteRequest, type WriteResult } from "../writeback.js";
 import { writeWithGitSideBranch, writeInPlace } from "../git-writer.js";
+import { loadConfig } from "../../config.js";
 
-const BASE = "C:/AiAppDeployments";
-
-function discoverRoots(): string[] {
-  const roots = [`${BASE}/RLM-CLI-Starter`];
+// RLM's claim surface is the canonical starter repo plus every `^RLM*` sibling
+// directory found under the scan root. Both are injectable so tests can pin the
+// sandbox independent of host layout, and the scan root is env-pinnable
+// (EIGHTS_RLM_ROOT) to constrain the claim surface on broad parents.
+function discoverRoots(scanRoot: string, starter: string): string[] {
+  const roots = [starter];
   try {
-    for (const e of readdirSync(BASE, { withFileTypes: true })) {
-      if (e.isDirectory() && /^RLM/.test(e.name)) roots.push(`${BASE}/${e.name}`);
+    for (const e of readdirSync(scanRoot, { withFileTypes: true })) {
+      if (e.isDirectory() && /^RLM/.test(e.name)) roots.push(`${scanRoot}/${e.name}`);
     }
   } catch { /* ignore */ }
   return roots.filter(existsSync);
@@ -17,7 +20,10 @@ function discoverRoots(): string[] {
 
 export class RlmWriteBridge implements WriteBridge {
   readonly consumer: Consumer = "rlm";
-  private readonly roots: string[] = discoverRoots();
+  private readonly roots: string[];
+  constructor(scanRoot: string = loadConfig().rlmScanRoot, starter: string = loadConfig().rlmStarterRoot) {
+    this.roots = discoverRoots(scanRoot, starter);
+  }
   canHandle(source_path: string): boolean { return this.roots.some((r) => pathContains(r, source_path)); }
   async write(req: WriteRequest): Promise<WriteResult> {
     if (!this.canHandle(req.source_path)) {

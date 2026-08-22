@@ -10,17 +10,18 @@
  * file is absent, we still mint the resource with empty initial content so
  * the override slot is reserved and edits will be tracked.
  */
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import type { EvolutionEngine } from "../evolution.js";
 import type { Envelope } from "../../schemas/envelope.js";
 import type { Logger } from "pino";
 import { walk, registerFile, basenameNoExt, existsDir, type RegistrationResult } from "./common.js";
+import { loadConfig } from "../../config.js";
 
-const PP_ROOT = "C:/AiAppDeployments/pair-programmer";
+const cfg = loadConfig();
+const PP_ROOT = cfg.ppRoot;
 // pp installs into the user-level Claude Code dir (~/.claude/), not C:/.claude
-const CLAUDE_ROOT = join(homedir(), ".claude").replace(/\\/g, "/");
+const CLAUDE_ROOT = cfg.claudeRoot;
 
 const CRITICAL_RUBRIC_RE = /^(security|contract|spec|owasp|slsa|nist|hipaa|gdpr|coppa|wcag)/i;
 

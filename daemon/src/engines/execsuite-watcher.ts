@@ -12,13 +12,14 @@ import { join } from "node:path";
 import type { Logger } from "pino";
 import type { SqliteStore } from "../stores/sqlite.js";
 import type { ExecSuiteBridge } from "../adapters/execsuite-bridge.js";
+import { loadConfig } from "../config.js";
 
 export interface ExecSuiteWatcherOptions {
   outputRoot?: string;
   pollMs?: number;
 }
 
-const DEFAULT_OUTPUT_ROOT = "C:/AiAppDeployments/ExecutiveSuite/output";
+const DEFAULT_OUTPUT_ROOT = loadConfig().execsuiteOutputRoot;
 
 export class ExecSuiteWatcher {
   private timer: NodeJS.Timeout | null = null;

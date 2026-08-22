@@ -3,8 +3,9 @@ import type { EvolutionEngine } from "../evolution.js";
 import type { Envelope } from "../../schemas/envelope.js";
 import type { Logger } from "pino";
 import { walk, registerFile, basenameNoExt, existsDir, type RegistrationResult } from "./common.js";
+import { loadConfig } from "../../config.js";
 
-const HYDRA_ROOT = "C:/AiAppDeployments/Hydra";
+const HYDRA_ROOT = loadConfig().hydraRoot;
 
 export class HydraRegistrar {
   constructor(private readonly engine: EvolutionEngine, private readonly log: Logger) {}

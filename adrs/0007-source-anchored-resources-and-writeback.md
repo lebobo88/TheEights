@@ -23,11 +23,18 @@ Default `writeback_mode` is `in-place+branch`: write the file in place and stage
 
 Every `WriteBridge.canHandle(path)` MUST return `false` for any path that is not `path.resolve`-contained inside the consumer's allowlisted root. Test-enforced. A `write()` that bypasses `canHandle` throws and surfaces as an audit anomaly.
 
-Consumer roots:
-- pp: `C:/AiAppDeployments/pair-programmer` ∪ `C:/.claude`
-- hydra: `C:/AiAppDeployments/Hydra`
-- execsuite: `C:/AiAppDeployments/ExecutiveSuite`
-- rlm: `C:/AiAppDeployments/RLM-CLI-Starter` and any sibling matching `^RLM` under `C:/AiAppDeployments`
+**Consumer roots are resolved in `daemon/src/config.ts` (`loadConfig()`), not hardcoded.** This keeps the sandbox portable across machines and clones. The default for the base (`siblingsRoot`) is the **parent directory of the TheEights clone** (side-by-side sibling layout), and every root is independently overridable via an environment variable. The bridges/registrars/watchers read these resolved values; they never derive paths from `process.cwd()`.
+
+| Consumer | Allowlisted root(s) | Env override | Default (`siblingsRoot` = parent of clone) |
+| --- | --- | --- | --- |
+| pp | repo ∪ `~/.claude` | `EIGHTS_PP_ROOT` | `<siblingsRoot>/pair-programmer` ∪ `~/.claude` |
+| hydra | repo | `EIGHTS_HYDRA_ROOT` | `<siblingsRoot>/Hydra` |
+| execsuite | repo | `EIGHTS_EXECSUITE_ROOT` | `<siblingsRoot>/ExecutiveSuite` |
+| rlm | starter repo + any `^RLM*` dir under the scan root | `EIGHTS_RLM_STARTER_ROOT`, `EIGHTS_RLM_ROOT` (scan) | `<siblingsRoot>/RLM-CLI-Starter` + `^RLM*` under `<siblingsRoot>` |
+
+The base itself is `EIGHTS_SIBLINGS_ROOT`. The RLM **scan root** (`EIGHTS_RLM_ROOT`) is kept separate from the starter **repo root** (`EIGHTS_RLM_STARTER_ROOT`) and is independently pinnable so the `^RLM*` claim surface can be constrained on a broad parent.
+
+> **Sandbox-contract note:** changing a default root *relocates* the writeback sandbox to where the repos actually live; it does not broaden tenant/scope access (each root is still a specific allowlisted directory). Operators changing layout should set the env vars explicitly. **Stale-source caveat:** `EvolutionEngine.register()` upserts `resource_sources` without pruning, so a deployment that previously registered sources under a *different* root should re-seed a clean `~/.eights` (or prune manually) to avoid drift/writeback against dead paths.
 
 ## Failure mode
 

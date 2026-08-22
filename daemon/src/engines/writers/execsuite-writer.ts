@@ -1,12 +1,13 @@
 import type { Consumer } from "../../schemas/resource.js";
 import { pathContains, type WriteBridge, type WriteRequest, type WriteResult } from "../writeback.js";
 import { writeWithGitSideBranch, writeInPlace } from "../git-writer.js";
-
-const ROOT = "C:/AiAppDeployments/ExecutiveSuite";
+import { loadConfig } from "../../config.js";
 
 export class ExecSuiteWriteBridge implements WriteBridge {
   readonly consumer: Consumer = "execsuite";
-  canHandle(source_path: string): boolean { return pathContains(ROOT, source_path); }
+  // Root is injectable so tests can pin the sandbox independent of host layout.
+  constructor(private readonly root: string = loadConfig().execsuiteRoot) {}
+  canHandle(source_path: string): boolean { return pathContains(this.root, source_path); }
   async write(req: WriteRequest): Promise<WriteResult> {
     if (!this.canHandle(req.source_path)) {
       return { ok: false, source_path: req.source_path, mode_used: req.writeback_mode, error: "sandbox: path not under ExecutiveSuite root" };

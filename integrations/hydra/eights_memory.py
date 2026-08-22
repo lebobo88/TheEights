@@ -33,10 +33,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 
+# Resolve the daemon relative to this file (integrations/hydra -> repo root ->
+# daemon/dist) so it works on any clone; EIGHTS_DAEMON_JS overrides.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 DAEMON_PATH_DEFAULT = Path(
     os.environ.get(
         "EIGHTS_DAEMON_JS",
-        "C:/AiAppDeployments/TheEights/daemon/dist/index.js",
+        str(_REPO_ROOT / "daemon" / "dist" / "index.js"),
     )
 )
 

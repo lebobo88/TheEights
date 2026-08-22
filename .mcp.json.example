@@ -1,8 +1,9 @@
 {
+  "_comment": "The `eights` MCP server must be registered at USER scope (so every project can reach it), and its launch path MUST be ABSOLUTE. A relative path like ./daemon/dist/index.js resolves against the session's cwd and only works when that cwd is this repo. Replace <path-to-clone> with the real absolute path to your clone. On Windows, prefer scripts/register-eights-mcp.ps1 which derives the path automatically.",
   "mcpServers": {
     "eights": {
       "command": "node",
-      "args": ["C:/AiAppDeployments/TheEights/daemon/dist/index.js"],
+      "args": ["<path-to-clone>/TheEights/daemon/dist/index.js"],
       "env": {
         "EIGHTS_LOG_LEVEL": "info"
       }

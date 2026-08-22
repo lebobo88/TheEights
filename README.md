@@ -270,11 +270,21 @@ TheEights uses the [Model Context Protocol](https://modelcontextprotocol.io/) st
 **Claude Code:**
 
 ```bash
-# From the repository root
-claude mcp add eights --scope user -- node ./daemon/dist/index.js
+# Use an ABSOLUTE path to the built daemon. A user-scope server is launched from
+# whatever directory the session started in, so a relative path like
+# ./daemon/dist/index.js only resolves when the cwd happens to be this repo —
+# it fails (server won't connect) in every other project.
+claude mcp add eights --scope user -- node /absolute/path/to/TheEights/daemon/dist/index.js
 ```
 
-**Cursor / Continue / other MCP hosts:** follow the same pattern — point the host's MCP config at `node <path>/daemon/dist/index.js` over stdio.
+On Windows, the idempotent helper does this for you (derives the path from its own
+location, so it stays correct after a re-clone):
+
+```powershell
+pwsh -NoProfile -File scripts/register-eights-mcp.ps1
+```
+
+**Cursor / Continue / other MCP hosts:** follow the same pattern — point the host's MCP config at `node <absolute-path>/daemon/dist/index.js` over stdio.
 
 The daemon creates its state directory on first run:
 - **Linux/macOS:** `~/.eights/`
@@ -532,6 +542,20 @@ See [`.env.example`](./.env.example) for a complete annotated template.
 |----------|---------|---------|
 | `EIGHTS_OTEL_ENABLED` | `0` | Enable OpenTelemetry exporter (localhost-only; refuses non-loopback) |
 | `EIGHTS_OTEL_ENDPOINT` | `http://localhost:4318/v1/traces` | OTEL endpoint (must be loopback) |
+
+### Consumer / Sibling Repo Roots
+
+Locations of the sibling repos TheEights watches and writes back to. Resolved in `daemon/src/config.ts` and used by the registrars, watchers, and write bridges; they define the writeback sandbox (see [ADR-0007](./adrs/0007-source-anchored-resources-and-writeback.md)). Defaults derive from the parent directory of this clone, so a side-by-side clone usually needs none of these. The daemon reads `process.env` directly (it does **not** load `.env`), so set overrides in the actual environment — e.g. the `.claude.json` MCP server `env` block.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `EIGHTS_SIBLINGS_ROOT` | parent dir of the TheEights clone | Base directory for the per-repo defaults below |
+| `EIGHTS_HYDRA_ROOT` | `<siblings>/Hydra` | Hydra repo root |
+| `EIGHTS_PP_ROOT` | `<siblings>/pair-programmer` | pair-programmer repo root (∪ `~/.claude`) |
+| `EIGHTS_EXECSUITE_ROOT` | `<siblings>/ExecutiveSuite` | ExecutiveSuite repo root |
+| `EIGHTS_EXEC_OUTPUT_ROOT` | `<execsuite>/output` | ExecutiveSuite output dir the watcher tails |
+| `EIGHTS_RLM_ROOT` | `<siblings>` | **Scan** root: readdir base for `^RLM*` sibling dirs |
+| `EIGHTS_RLM_STARTER_ROOT` | `<siblings>/RLM-CLI-Starter` | Canonical RLM-CLI-Starter repo root |
 
 ### Development
 

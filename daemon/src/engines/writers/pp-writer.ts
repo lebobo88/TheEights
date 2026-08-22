@@ -1,18 +1,21 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { Consumer } from "../../schemas/resource.js";
 import { pathContains, type WriteBridge, type WriteRequest, type WriteResult } from "../writeback.js";
 import { writeWithGitSideBranch, writeInPlace } from "../git-writer.js";
+import { loadConfig } from "../../config.js";
 
-const ROOTS = [
-  "C:/AiAppDeployments/pair-programmer",
-  join(homedir(), ".claude").replace(/\\/g, "/"),
-];
+// pp has two trust roots: its repo, and the user-level Claude install (~/.claude)
+// where pp installs its agents/skills/commands. Roots are injectable so tests
+// can pin the sandbox independent of host layout.
+function defaultRoots(): string[] {
+  const cfg = loadConfig();
+  return [cfg.ppRoot, cfg.claudeRoot];
+}
 
 export class PpWriteBridge implements WriteBridge {
   readonly consumer: Consumer = "pp";
+  constructor(private readonly roots: string[] = defaultRoots()) {}
   canHandle(source_path: string): boolean {
-    return ROOTS.some((r) => pathContains(r, source_path));
+    return this.roots.some((r) => pathContains(r, source_path));
   }
   async write(req: WriteRequest): Promise<WriteResult> {
     if (!this.canHandle(req.source_path)) {

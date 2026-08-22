@@ -6,16 +6,19 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Writable, Readable } from "node:stream";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 
+// Resolve the daemon relative to this module, not the caller's cwd. The compiled
+// file lives at <repo>/cli/dist/mcp-client.js, so the daemon is two levels up.
+const HERE = dirname(fileURLToPath(import.meta.url));
+
 const DEFAULT_DAEMON = process.env.EIGHTS_DAEMON_JS
-  ?? join(process.cwd(), "..", "daemon", "dist", "index.js");
+  ?? join(HERE, "..", "..", "daemon", "dist", "index.js");
 
 const FALLBACKS = [
-  join(homedir(), "..", "..", "AiAppDeployments", "TheEights", "daemon", "dist", "index.js"),
-  "C:/AiAppDeployments/TheEights/daemon/dist/index.js",
+  join(HERE, "..", "..", "daemon", "dist", "index.js"),
 ];
 
 export class EightsClient {

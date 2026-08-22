@@ -2,7 +2,9 @@
 # Surfaces pending proposals and audit chain health from TheEights daemon.
 param()
 
-$eightsCli = "C:\AiAppDeployments\TheEights\cli\dist\index.js"
+# Resolve the CLI relative to this hook (<repo>/.claude/hooks -> <repo>/cli/dist)
+# so it works on any clone. EIGHTS_CLI_JS overrides.
+$eightsCli = if ($env:EIGHTS_CLI_JS) { $env:EIGHTS_CLI_JS } else { Join-Path $PSScriptRoot "..\..\cli\dist\index.js" }
 if (-not (Test-Path $eightsCli)) { exit 0 }
 
 try {

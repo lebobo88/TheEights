@@ -424,11 +424,12 @@ function seedConstitutions(c: ConstitutionEngine, log: ReturnType<typeof makeLog
     project_id: "TheEights", domain: "infra",
     scope: [], trace_id: "seed-constitutions",
   };
+  const cfg = loadConfig();
   const seeds: Array<{ consumer: "hydra" | "pp" | "execsuite" | "rlm"; path: string }> = [
-    { consumer: "hydra", path: "C:/AiAppDeployments/Hydra/constitution.md" },
-    { consumer: "pp", path: "C:/AiAppDeployments/pair-programmer/constitution.md" },
-    { consumer: "execsuite", path: "C:/AiAppDeployments/ExecutiveSuite/constitution.md" },
-    { consumer: "rlm", path: "C:/AiAppDeployments/RLM-CLI-Starter/constitution.md" },
+    { consumer: "hydra", path: `${cfg.hydraRoot}/constitution.md` },
+    { consumer: "pp", path: `${cfg.ppRoot}/constitution.md` },
+    { consumer: "execsuite", path: `${cfg.execsuiteRoot}/constitution.md` },
+    { consumer: "rlm", path: `${cfg.rlmStarterRoot}/constitution.md` },
   ];
   for (const s of seeds) {
     let content = `# ${s.consumer} constitution (placeholder)\n\nSeeded by TheEights — amend via eights.constitution.propose_amendment.\n`;
