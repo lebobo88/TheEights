@@ -69,11 +69,16 @@ describe("MCP server per-tool deadline", () => {
     expect(parseBody(res).error).toContain("unknown tool");
   });
 
+  // E2-4: the refusal is a structured operational status, not a bare error
+  // string. Full coverage lives in readiness-gate.test.ts.
   it("refuses when the readiness gate is closed", async () => {
     const tools: ToolMap = { "x.y": { schema: z.object({}).passthrough(), handler: () => ({ ok: true }) } };
     const onCall = createToolCallHandler(tools, { ready: () => ({ ok: false, reason: "audit verification in progress" }) });
     const res = await onCall({ params: { name: "x.y", arguments: {} } });
     expect(res.isError).toBe(true);
-    expect(parseBody(res).error).toBe("audit verification in progress");
+    const body = parseBody(res);
+    expect(body.status).toBe("not_ready");
+    expect(body.ready).toBe(false);
+    expect(body.reason).toBe("audit verification in progress");
   });
 });

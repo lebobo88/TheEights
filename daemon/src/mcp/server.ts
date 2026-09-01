@@ -31,6 +31,13 @@ export interface ToolDef<T extends ZodTypeAny = ZodTypeAny> {
   schema: T;
   handler: (args: ReturnType<T["parse"]>, ctx?: ToolCtx) => unknown | Promise<unknown>;
   description?: string;
+  /**
+   * Exempt from the fail-closed readiness gate (E2-4). Only tools that touch
+   * NO audited state may set this — today that is `eights.health`, which reads
+   * the gate itself so a gateway health probe can see the not-ready state
+   * instead of inferring it from a refused business call.
+   */
+  ungated?: boolean;
 }
 
 export type ToolMap = Record<string, ToolDef>;
@@ -55,7 +62,52 @@ function traceIdOf(args: unknown): string | undefined {
  * on an unverified chain — only the protocol handshake completes first, which
  * keeps AGENTS.md hard rule #1 intact.
  */
-export type ReadinessGate = () => { ok: boolean; reason?: string };
+export interface ReadinessState {
+  ok: boolean;
+  /** Human-readable reason the gate is closed. Undefined once `ok` is true. */
+  reason?: string;
+  /**
+   * `true` when verification ran and FAILED (broken hash chain, bootstrap
+   * error) rather than still being in flight. A failed gate is terminal for
+   * this process — retrying will not help — so it refuses with a distinct
+   * `status: "failed"` instead of `not_ready`.
+   */
+  failed?: boolean;
+  /** Milliseconds elapsed since verification started. */
+  verify_ms_so_far?: number;
+  /** Hint for how long a caller should wait before retrying a pending gate. */
+  retry_after_ms?: number;
+}
+
+export type ReadinessGate = () => ReadinessState;
+
+/** Default retry hint handed to callers while verification is still running. */
+export const DEFAULT_RETRY_AFTER_MS = 2_000;
+
+/**
+ * Build the refusal body for a closed readiness gate.
+ *
+ * Deliberately NOT `{ error: "<string>" }`: a bare error string inside an
+ * otherwise successful-looking envelope reads as data to callers that only
+ * inspect the outer status (E2-4). A pending gate is an operational state, not
+ * a result, so it carries a machine-checkable `status` plus a retry hint.
+ */
+export function readinessRefusal(gate: ReadinessState): Record<string, unknown> {
+  if (gate.failed) {
+    return {
+      status: "failed",
+      ready: false,
+      error: `audit verification failed: ${gate.reason ?? "unknown reason"}`,
+    };
+  }
+  return {
+    status: "not_ready",
+    ready: false,
+    reason: gate.reason ?? "audit verification in progress",
+    retry_after_ms: gate.retry_after_ms ?? DEFAULT_RETRY_AFTER_MS,
+    ...(gate.verify_ms_so_far === undefined ? {} : { verify_ms_so_far: gate.verify_ms_so_far }),
+  };
+}
 
 /** Result envelope returned to the MCP transport for a tool call. */
 export interface ToolCallResult {
@@ -100,11 +152,13 @@ export function createToolCallHandler(
         isError: true,
       };
     }
-    if (opts.ready) {
+    if (opts.ready && !def.ungated) {
       const gate = opts.ready();
       if (!gate.ok) {
+        const body = readinessRefusal(gate);
+        log?.info({ tool: name, status: body.status }, "mcp tool refused — readiness gate closed");
         return {
-          content: [{ type: "text", text: JSON.stringify({ error: gate.reason ?? "eights-daemon not ready" }) }],
+          content: [{ type: "text", text: JSON.stringify(body) }],
           isError: true,
         };
       }
