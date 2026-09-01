@@ -32,6 +32,15 @@ export class HydraRegistrar {
   private regOne(env: Envelope, r: RegistrationResult, spec: Parameters<typeof registerFile>[2]): void {
     try {
       const result = registerFile(this.engine, env, spec);
+      if (result.risk_class_deferred) {
+        // E2-12: the stored class is more severe than this registrar's default. That is a
+        // reconcile signal for the operator, not a failure — governance stays at the
+        // stricter stored class and the scan converges.
+        this.log.info(
+          { rid: spec.rid, requested_risk_class: spec.risk_class, stored_risk_class: result.risk_class_deferred },
+          "hydra-registrar: deferring to stored risk_class (more severe than registrar default)",
+        );
+      }
       if (result.kind === "registered") r.registered += 1;
       else if (result.kind === "updated") r.updated += 1;
       else r.skipped += 1;

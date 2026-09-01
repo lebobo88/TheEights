@@ -73,7 +73,8 @@ import { registerHydraTools } from "./mcp/hydra.js";
 import { registerSquadTools } from "./mcp/squad.js";
 import { registerCellTools } from "./mcp/cells.js";
 import { registerPromptTools } from "./mcp/prompt.js";
-import { startMcpServer, type ToolMap } from "./mcp/server.js";
+import { startMcpServer, type ReadinessState, type ToolMap } from "./mcp/server.js";
+import { registerHealthTools } from "./mcp/health.js";
 import { startTransportThenScheduleBoot } from "./boot-sequencing.js";
 import { LazyEmbedder, LazyCompleter } from "./providers/lazy.js";
 import type { Envelope } from "./schemas/envelope.js";
@@ -165,17 +166,31 @@ async function main(): Promise<void> {
   // verifies only the tail past the persisted checkpoint; a daily background
   // job re-verifies from genesis (cognitive/audit-verifier.ts).
   let auditReady = false;
+  let auditFailed = false;
   let auditReason: string | undefined = "audit verification in progress";
+  // Wall-clock origin for `verify_ms_so_far`, so a caller that gets a
+  // `not_ready` refusal (or polls `eights.health`) can see how long the gate
+  // has been closed rather than guessing whether the daemon is wedged.
+  const auditVerifyStartedAt = Date.now();
   const auditGate: AuditGate = {
     pass() {
       auditReady = true;
+      auditFailed = false;
       auditReason = undefined;
+      log.info({ verify_ms: Date.now() - auditVerifyStartedAt }, "audit readiness gate open");
     },
     fail(reason: string) {
       auditReady = false;
+      auditFailed = true;
       auditReason = reason;
     },
   };
+  const readinessGate = (): ReadinessState => ({
+    ok: auditReady,
+    reason: auditReason,
+    failed: auditFailed,
+    verify_ms_so_far: auditReady ? undefined : Date.now() - auditVerifyStartedAt,
+  });
 
   const policy = new PolicyEngine(sql);
   const providerCfg = loadProviderConfig();
@@ -396,6 +411,8 @@ async function main(): Promise<void> {
     ...registerSquadTools(evolution),
     ...registerCellTools(sql, classifier, audit),
     ...registerPromptTools(evolution),
+    // Ungated — see mcp/health.ts. Must stay last so it cannot be shadowed.
+    ...registerHealthTools(readinessGate),
   };
   log.info({ tool_count: Object.keys(tools).length }, "MCP tools registered");
 
@@ -459,7 +476,7 @@ async function main(): Promise<void> {
     startTransport: () => startMcpServer(tools, {
       name: "eights-daemon",
       version: "0.3.0",
-      ready: () => ({ ok: auditReady, reason: auditReason }),
+      ready: readinessGate,
       log,
       // Fire before the Hydra gateway's ~120s per-call timeout so an opaque
       // gateway timeout becomes a fast, attributable "tool_deadline_exceeded".
