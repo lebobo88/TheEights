@@ -29,7 +29,7 @@ export const HandoffArgs = z.object({
 export function registerHydraTools(engine: HydraEngine) {
   return {
     "eights.hydra.envelope.record": {
-      description: "Durable, audited, semantically-indexed record of a HydraEnvelope (C_SUITE_DECISION_PACKET | PRD | ARCH_RFC | DEV_TASK | CREATIVE_BRIEF | SHOT_LIST | ASSET_JOB | HITL_REQUEST | DECISION_RECORD | HANDOFF | COCKPIT_WRITE). Legacy CamelCase types are accepted with a deprecation warning (Phase 3b migration window).",
+      description: "Durable, audited, semantically-indexed record of a HydraEnvelope (C_SUITE_DECISION_PACKET | PRD | ARCH_RFC | DEV_TASK | CREATIVE_BRIEF | SHOT_LIST | ASSET_JOB | HITL_REQUEST | DECISION_RECORD | HANDOFF | COCKPIT_WRITE | PLAN | SUPPORT_TICKET | PORTABLE_CONTEXT | VOC_REPORT | JUDGE_VERDICT). Legacy CamelCase types are accepted with a deprecation warning (Phase 3b migration window).",
       schema: RecordArgs,
       handler: async (a: z.infer<typeof RecordArgs>) => engine.record(a.envelope, a.hydra_envelope),
     },
