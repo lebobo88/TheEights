@@ -206,7 +206,6 @@ describe("Phase 6 — manifesto alignment", () => {
       origin_squad: "hydra-planner",
       target_squad: null,
       parent_id: null,
-      context_refs: [],
     } as never);
     expect(r.workflow_id).toBe("wf_plan_attestor_1");
     expect(r.memory_id).toBeNull();
@@ -259,12 +258,16 @@ describe("Phase 6 — manifesto alignment", () => {
           origin_squad: "test",
           target_squad: null,
           parent_id: null,
-          context_refs: [],
         },
       };
       // RecordArgs.parse throws on schema violation — proves the payload is
       // accepted at the real validation boundary, not merely by the engine.
+      // The attestor's forwarded shape never includes `context_refs`; assert
+      // that Zod's schema default ([]) is what actually reaches the engine,
+      // so a regression that drops the default would fail here even though
+      // this fixture would still "look right" without the field.
       const parsed = RecordArgs.parse(raw);
+      expect(parsed.hydra_envelope.context_refs).toEqual([]);
       const r = await recordTool.handler(parsed);
       expect(r.workflow_id).toBe("wf_x3_boundary");
       expect(r.type).toBe(type);
