@@ -55,8 +55,18 @@ export function normalizeHydraEnvelopeType(raw: unknown): unknown {
 }
 
 /**
- * Canonical 11-member UPPER_SNAKE vocabulary (Phase 3b).
- * COCKPIT_WRITE is new — Hydra cockpit audit envelopes routed to TheEights.
+ * Canonical 16-member UPPER_SNAKE vocabulary (Phase 3b + X3).
+ * COCKPIT_WRITE is Hydra cockpit audit envelopes routed to TheEights.
+ * PLAN, SUPPORT_TICKET, PORTABLE_CONTEXT, VOC_REPORT and JUDGE_VERDICT
+ * (X3) are additive members mirroring hydra_core/schemas.py's
+ * SCHEMA_REGISTRY — this enum is a strict subset check, never the type's
+ * source of truth. Adding a member here does not require an older TheEights
+ * daemon to "ignore" it and does not "degrade-open": an older daemon that
+ * hasn't picked up this enum change still rejects the new type at Zod
+ * validation (HydraEnvelope.safeParse fails), the same as any other unknown
+ * type. Rolling Hydra forward to emit these types before TheEights has this
+ * change deployed produces a validation error/retry (or a spooled envelope)
+ * on the TheEights side, not a silently-ignored envelope.
  */
 export const HydraEnvelopeType = z.enum([
   "C_SUITE_DECISION_PACKET",
@@ -70,6 +80,11 @@ export const HydraEnvelopeType = z.enum([
   "DECISION_RECORD",
   "HANDOFF",
   "COCKPIT_WRITE",
+  "PLAN",
+  "SUPPORT_TICKET",
+  "PORTABLE_CONTEXT",
+  "VOC_REPORT",
+  "JUDGE_VERDICT",
 ]);
 export type HydraEnvelopeType = z.infer<typeof HydraEnvelopeType>;
 

@@ -32,6 +32,7 @@ import { PromptRegistrar } from "../src/engines/registrars/prompts.js";
 import { formatEpisodic, parseHandle } from "../src/schemas/memory-handle.js";
 import type { Envelope } from "../src/schemas/envelope.js";
 import type { Embedder } from "../src/embeddings.js";
+import { registerHydraTools, RecordArgs } from "../src/mcp/hydra.js";
 
 const log = pino({ level: "warn" });
 void log; // used in tests but TypeScript strict-mode would warn if unused
@@ -162,6 +163,131 @@ describe("Phase 6 — manifesto alignment", () => {
     } as never);
     const handoffs = hydra.listHandoffs(env, "wf_1");
     expect(handoffs.length).toBe(1);
+  });
+
+  it("X3 (persistence test, direct engine — NOT the production attestor shape): a PLAN body that happens to carry a `summary` key is indexed by extractSummary", async () => {
+    // NOTE ON SCOPE: this calls HydraEngine.record directly with a hand-built
+    // body that includes `summary`. Hydra's real attestor
+    // (hydra_core/eights/attestation.py:507-515) only forwards
+    // id/type/workflow_id/origin_squad/target_squad/parent_id — it does NOT
+    // forward `summary` or any other Plan-body field. So this test proves only
+    // that extractSummary's `summary` probe works when a `summary` key is
+    // present in whatever is passed to record(); it does NOT prove that a
+    // production-attested PLAN gets a semantic memory row. See the next test
+    // for the honest, attestor-shaped counterpart (memory_id is null there).
+    const r = await hydra.record(env, {
+      id: "env_test_plan_1", type: "PLAN",
+      origin_squad: "hydra-planner", target_squad: null,
+      workflow_id: "wf_plan_1", context_refs: [],
+      // @ts-expect-error passthrough extra fields (Plan body is not re-typed here)
+      summary: "Decompose the X3 goal into dependency-ordered steps",
+      rigor: "standard", goal_restatement: "Let X3 envelopes reach TheEights",
+    } as never);
+    expect(r.workflow_id).toBe("wf_plan_1");
+    // StubEmbedder.available() returns false, so memory.add still runs (embedding
+    // is optional) and extractSummary's match against `summary` should produce
+    // a row — assert memory_id is non-null, not just that record() succeeded.
+    expect(r.memory_id).not.toBeNull();
+    const q = hydra.query(env, { workflow_id: "wf_plan_1" });
+    expect(q.find((e) => e.envelope_id === r.envelope_id)).toBeDefined();
+  });
+
+  it("X3: a PLAN recorded in the real attestor's forwarded shape (id/type/workflow_id/origin_squad/target_squad/parent_id only, NO summary) persists durably but yields a null memory_id", async () => {
+    // This is the production-honest counterpart to the test above. Hydra's
+    // attestor never forwards `summary` (or `objective`/`description`/`goal`),
+    // so extractSummary's four-field probe finds nothing and memory_id stays
+    // null — the PLAN is still durably recorded and queryable, it's just not
+    // semantically indexed. This does not change extractSummary or record()'s
+    // indexing behavior; it documents/pins the real production outcome.
+    const r = await hydra.record(env, {
+      id: "env_test_plan_attestor_1",
+      type: "PLAN",
+      workflow_id: "wf_plan_attestor_1",
+      origin_squad: "hydra-planner",
+      target_squad: null,
+      parent_id: null,
+      context_refs: [],
+    } as never);
+    expect(r.workflow_id).toBe("wf_plan_attestor_1");
+    expect(r.memory_id).toBeNull();
+    const q = hydra.query(env, { workflow_id: "wf_plan_attestor_1" });
+    expect(q.find((e) => e.envelope_id === r.envelope_id)).toBeDefined();
+  });
+
+  it("X3 (persistence test, direct engine — bypasses public validation boundary): SUPPORT_TICKET, PORTABLE_CONTEXT, VOC_REPORT and JUDGE_VERDICT all record successfully", async () => {
+    // This test calls HydraEngine.record directly and therefore does not
+    // exercise Zod's runtime enum validation (HydraEngine.record has none of
+    // its own). It proves the persistence path (INSERT + query) works for each
+    // new type's shape; it does NOT prove the public intake boundary rejects
+    // unknown types. See the RecordArgs/MCP-handler boundary test below for that.
+    const cases: Array<{ id: string; type: string; extra: Record<string, unknown> }> = [
+      { id: "env_test_support_1", type: "SUPPORT_TICKET", extra: { description: "Customer cannot reset password" } },
+      { id: "env_test_portctx_1", type: "PORTABLE_CONTEXT", extra: {} },
+      { id: "env_test_voc_1", type: "VOC_REPORT", extra: { summary: "Q3 VoC themes" } },
+      { id: "env_test_judge_1", type: "JUDGE_VERDICT", extra: {} },
+    ];
+    for (const c of cases) {
+      const r = await hydra.record(env, {
+        id: c.id, type: c.type,
+        origin_squad: "test", target_squad: null,
+        workflow_id: "wf_x3_misc", context_refs: [],
+        ...c.extra,
+      } as never);
+      expect(r.workflow_id).toBe("wf_x3_misc");
+    }
+    const q = hydra.query(env, { workflow_id: "wf_x3_misc" });
+    expect(q.length).toBe(cases.length);
+  });
+
+  it("X3 (public validation boundary — RecordArgs + MCP handler): PLAN, SUPPORT_TICKET, PORTABLE_CONTEXT, VOC_REPORT and JUDGE_VERDICT all pass through the attestor-shaped payload and record successfully", async () => {
+    // Unlike the direct-engine tests above, this goes through the same public
+    // seam the real MCP tool call uses: RecordArgs.parse (Zod validation) then
+    // the registered "eights.hydra.envelope.record" handler. The payload shape
+    // mirrors exactly what Hydra's attestor forwards — no summary/objective/
+    // description/goal fields — so this also documents that the boundary does
+    // not require those optional fields.
+    const tools = registerHydraTools(hydra);
+    const recordTool = tools["eights.hydra.envelope.record"];
+    const x3Types = ["PLAN", "SUPPORT_TICKET", "PORTABLE_CONTEXT", "VOC_REPORT", "JUDGE_VERDICT"];
+    for (const type of x3Types) {
+      const raw = {
+        envelope: env,
+        hydra_envelope: {
+          id: `env_boundary_${type}`,
+          type,
+          workflow_id: "wf_x3_boundary",
+          origin_squad: "test",
+          target_squad: null,
+          parent_id: null,
+          context_refs: [],
+        },
+      };
+      // RecordArgs.parse throws on schema violation — proves the payload is
+      // accepted at the real validation boundary, not merely by the engine.
+      const parsed = RecordArgs.parse(raw);
+      const r = await recordTool.handler(parsed);
+      expect(r.workflow_id).toBe("wf_x3_boundary");
+      expect(r.type).toBe(type);
+    }
+    const q = hydra.query(env, { workflow_id: "wf_x3_boundary" });
+    expect(q.length).toBe(x3Types.length);
+  });
+
+  it("X3 (public validation boundary): an unknown envelope type is rejected by RecordArgs before it ever reaches the engine", () => {
+    const raw = {
+      envelope: env,
+      hydra_envelope: {
+        id: "env_boundary_unknown",
+        type: "SOMETHING_STILL_UNKNOWN",
+        workflow_id: "wf_x3_boundary_unknown",
+        origin_squad: "test",
+        target_squad: null,
+        parent_id: null,
+        context_refs: [],
+      },
+    };
+    const result = RecordArgs.safeParse(raw);
+    expect(result.success).toBe(false);
   });
 
   it("cells distribution counts the eight + untagged buckets", async () => {
