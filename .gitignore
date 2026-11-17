@@ -17,3 +17,5 @@ daemon/src/providers/local/
 
 # Runtime scheduler lock — transient, never committed
 .claude/scheduled_tasks.lock
+.harness/
+.hydra/

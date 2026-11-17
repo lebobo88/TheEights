@@ -1,17 +1,28 @@
 /**
- * Contract tests for HydraEnvelopeType UPPER_SNAKE vocabulary (Phase 3b).
+ * Contract tests for HydraEnvelopeType UPPER_SNAKE vocabulary (Phase 3b + X3).
  *
  * Pins:
- *   1. The exact 11-member UPPER_SNAKE enum.
+ *   1. The exact 16-member UPPER_SNAKE enum (11 Phase-3b members + 5 X3
+ *      members: PLAN, SUPPORT_TICKET, PORTABLE_CONTEXT, VOC_REPORT,
+ *      JUDGE_VERDICT).
  *   2. Legacy CamelCase values normalise to UPPER_SNAKE at the Zod seam (with
  *      a deprecation warning to stderr).
- *   3. Truly unknown types are rejected by Zod.
+ *   3. Truly unknown types are rejected by Zod — including a genuinely novel
+ *      type, so the boundary the enum exists to be stays a boundary rather
+ *      than degrading into "accepts everything" as members are added.
  *   4. V9 migration is idempotent and correctly converts CamelCase rows in a
  *      fixture database that pre-dates the Phase 3b change — including both the
  *      type COLUMN and the embedded "type" field inside payload_json.
  *   5. CAMEL_TO_UPPER_SNAKE has exactly 9 entries and covers the full legacy set
  *      (including CSuiteDecisionPacket which pair-programmer has historically emitted).
+ *      None of the 5 X3 members has a CamelCase legacy alias — they were never
+ *      emitted pre-Phase-3b, so there is nothing to migrate.
  *   6. QueryArgs.type normalises CamelCase values at the schema seam.
+ *   7. Each X3 member is hand-pinned against hydra_core/schemas.py's
+ *      SCHEMA_REGISTRY (see the comment on X3_MEMBERS below — there is no
+ *      cross-repo runtime dependency between this Node daemon and Hydra's
+ *      Python package, so this is a manual, re-verify-on-touch pin, not an
+ *      automated cross-repo check).
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -43,11 +54,42 @@ const EXPECTED_UPPER_SNAKE_MEMBERS = [
   "DECISION_RECORD",
   "HANDOFF",
   "COCKPIT_WRITE",
+  "PLAN",
+  "SUPPORT_TICKET",
+  "PORTABLE_CONTEXT",
+  "VOC_REPORT",
+  "JUDGE_VERDICT",
+] as const;
+
+/**
+ * The 5 X3 members, hand-verified character-for-character against
+ * `hydra_core/schemas.py` in the Hydra repo (read-only cross-check; there is
+ * no package dependency between the two repos, so this list is a manual pin
+ * that must be re-verified any time either side's vocabulary changes):
+ *   - PLAN               — schemas.py:308  `type: Literal["PLAN"] = "PLAN"`
+ *                           and SCHEMA_REGISTRY["PLAN"] at schemas.py:521.
+ *   - SUPPORT_TICKET     — schemas.py:448  `type: Literal["SUPPORT_TICKET"]`
+ *                           and SCHEMA_REGISTRY["SUPPORT_TICKET"] at :522.
+ *   - PORTABLE_CONTEXT   — schemas.py:469  `type: Literal["PORTABLE_CONTEXT"]`
+ *                           and SCHEMA_REGISTRY["PORTABLE_CONTEXT"] at :523.
+ *   - VOC_REPORT         — schemas.py:490  `type: Literal["VOC_REPORT"]`
+ *                           and SCHEMA_REGISTRY["VOC_REPORT"] at :524.
+ *   - JUDGE_VERDICT      — hydra_core/judge/schemas.py:40
+ *                           `type: Literal["JUDGE_VERDICT"] = "JUDGE_VERDICT"`,
+ *                           registered lazily into SCHEMA_REGISTRY by
+ *                           `_register_judge_verdict()` (schemas.py:535-541).
+ */
+const X3_MEMBERS = [
+  "PLAN",
+  "SUPPORT_TICKET",
+  "PORTABLE_CONTEXT",
+  "VOC_REPORT",
+  "JUDGE_VERDICT",
 ] as const;
 
 describe("HydraEnvelopeType — canonical UPPER_SNAKE enum", () => {
-  it("has exactly 11 members", () => {
-    expect(HydraEnvelopeType.options).toHaveLength(11);
+  it("has exactly 16 members", () => {
+    expect(HydraEnvelopeType.options).toHaveLength(16);
   });
 
   it("contains every expected UPPER_SNAKE member", () => {
@@ -67,6 +109,45 @@ describe("HydraEnvelopeType — canonical UPPER_SNAKE enum", () => {
     for (const legacy of legacyCamel) {
       expect(HydraEnvelopeType.options).not.toContain(legacy);
     }
+  });
+
+  describe("X3 members — PLAN, SUPPORT_TICKET, PORTABLE_CONTEXT, VOC_REPORT, JUDGE_VERDICT", () => {
+    it("accepts each X3 member via HydraEnvelope.safeParse", () => {
+      for (const member of X3_MEMBERS) {
+        const result = HydraEnvelope.safeParse({
+          id: `env-${member}`,
+          type: member,
+          origin_squad: "test",
+          workflow_id: "wf-test",
+          context_refs: [],
+        });
+        expect(result.success, `expected "${member}" to be accepted`).toBe(true);
+        if (result.success) {
+          expect(result.data.type).toBe(member);
+        }
+      }
+    });
+
+    it("still rejects a genuinely unknown type after the X3 additions (boundary property, not just the 5 positives)", () => {
+      // This is the assertion that matters: proves the enum is still a
+      // closed boundary, not that it now accepts everything.
+      const result = HydraEnvelope.safeParse({
+        id: "env-unknown-post-x3",
+        type: "SOMETHING_STILL_UNKNOWN",
+        origin_squad: "test",
+        workflow_id: "wf-test",
+        context_refs: [],
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("the real (unmodified) HydraEnvelopeType export accepts PLAN directly", () => {
+      // Direct assertion against the real export (not a locally re-derived
+      // enum guaranteed to omit PLAN, which would prove nothing about the
+      // production enum). Complements the HydraEnvelope.safeParse coverage
+      // above by pinning the bare HydraEnvelopeType.safeParse behavior too.
+      expect(HydraEnvelopeType.safeParse("PLAN").success).toBe(true);
+    });
   });
 });
 
@@ -152,9 +233,18 @@ describe("CAMEL_TO_UPPER_SNAKE — legacy map completeness", () => {
   });
 
   it("mapped values are a subset of the canonical UPPER_SNAKE enum (set-equality against non-aliased members)", () => {
-    // PRD and COCKPIT_WRITE have no legacy CamelCase alias; every other canonical
-    // value MUST have an alias so legacy clients can be migrated.
-    const noAlias = new Set(["PRD", "COCKPIT_WRITE"]);
+    // PRD and COCKPIT_WRITE have no legacy CamelCase alias; every other
+    // Phase-3b canonical value MUST have an alias so legacy clients can be
+    // migrated. The 5 X3 members (PLAN, SUPPORT_TICKET, PORTABLE_CONTEXT,
+    // VOC_REPORT, JUDGE_VERDICT) are likewise exempt: they were never emitted
+    // in CamelCase pre-Phase-3b (Hydra mints them UPPER_SNAKE from day one),
+    // so there is no legacy form to alias. This is the exhaustive-consumer
+    // fix the X3 brief called for — adding enum members without updating
+    // this allow-list would have made this assertion fail forever.
+    const noAlias = new Set([
+      "PRD", "COCKPIT_WRITE",
+      "PLAN", "SUPPORT_TICKET", "PORTABLE_CONTEXT", "VOC_REPORT", "JUDGE_VERDICT",
+    ]);
     const mappedValues = new Set(Object.values(CAMEL_TO_UPPER_SNAKE));
     const expectedAliased = new Set(
       HydraEnvelopeType.options.filter((v) => !noAlias.has(v)),
